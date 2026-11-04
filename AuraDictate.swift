@@ -311,6 +311,8 @@ final class DictationController: NSObject, ObservableObject {
     }
 
     @Published var showAppearance = false
+    @Published var showOnboarding = !UserDefaults.standard.bool(forKey: "completedOnboarding")
+    @Published var onboardingStep = 0
     @Published var state: State = .idle
     @Published var volatileTranscript: String = ""
     @Published var finalizedTranscript: String = ""
@@ -484,20 +486,8 @@ final class DictationController: NSObject, ObservableObject {
         let wasGranted = microphoneGranted
         microphoneGranted = (micStatus == .authorized)
 
-        if micStatus == .notDetermined {
-            AVCaptureDevice.requestAccess(for: .audio) { [weak self] granted in
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.microphoneGranted = granted
-                    if granted {
-                        self.rebuildCaptureSessionInput()
-                    } else {
-                        self.captureReady = false
-                        self.errorMessage = "Microphone permission required"
-                    }
-                }
-            }
-        } else if micStatus == .authorized {
+        if micStatus == .authorized {
+            if errorMessage == "Microphone permission required" { errorMessage = nil }
             if !wasGranted || !captureReady {
                 rebuildCaptureSessionInput()
             } else {
@@ -505,7 +495,22 @@ final class DictationController: NSObject, ObservableObject {
             }
         } else {
             captureReady = false
-            errorMessage = "Microphone permission denied"
+            if micStatus == .denied || micStatus == .restricted {
+                errorMessage = "Microphone permission required"
+            }
+        }
+    }
+
+    func promptMicrophonePermission() {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .audio) { [weak self] _ in
+                Task { @MainActor in self?.refreshPermissionsAndConfigureIfNeeded() }
+            }
+        case .authorized:
+            refreshPermissionsAndConfigureIfNeeded()
+        default:
+            openPrivacySettings("Privacy_Microphone")
         }
     }
 
@@ -514,7 +519,20 @@ final class DictationController: NSObject, ObservableObject {
         accessibilityGranted = AXIsProcessTrustedWithOptions(options)
         if accessibilityGranted {
             installCGEventTapIfNeeded()
+        } else {
+            openPrivacySettings("Privacy_Accessibility")
         }
+    }
+
+    private func openPrivacySettings(_ pane: String) {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    func finishOnboarding() {
+        UserDefaults.standard.set(true, forKey: "completedOnboarding")
+        showOnboarding = false
     }
 
     private func installDeviceObservers() {
@@ -1224,13 +1242,17 @@ struct StudioMainView: View {
             background
                 .ignoresSafeArea()
 
-            VStack(spacing: 16) {
-                headerBar
-                visualizerPanel
-                controlsBar
-                historyList
+            if controller.showOnboarding {
+                OnboardingView(controller: controller, accent: accent, surface: surface)
+            } else {
+                VStack(spacing: 16) {
+                    headerBar
+                    visualizerPanel
+                    controlsBar
+                    historyList
+                }
+                .padding(20)
             }
-            .padding(20)
         }
         .frame(minWidth: 560, minHeight: 480)
         .preferredColorScheme(.dark)
@@ -1261,7 +1283,7 @@ struct StudioMainView: View {
             .popover(isPresented: $controller.showAppearance) { appearanceSettings }
 
             if !controller.microphoneGranted {
-                statusButton(label: "MIC", action: { controller.refreshPermissionsAndConfigureIfNeeded() })
+                statusButton(label: "MIC", action: { controller.promptMicrophonePermission() })
             }
             if !controller.accessibilityGranted {
                 statusButton(label: "ACCESSIBILITY", action: { controller.promptAccessibilityPermission() })
@@ -1519,6 +1541,102 @@ struct StudioMainView: View {
     }
 }
 
+// MARK: - First-run setup
+
+struct OnboardingView: View {
+    @ObservedObject var controller: DictationController
+    let accent: Color
+    let surface: Color
+
+    private var step: Int { controller.onboardingStep }
+    private var accessPaneName: String {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+            ? "Device Control and Data Access" : "Accessibility"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 12) {
+                AuraMark(shape: "waveform", color: accent)
+                Text("AURA DICTATE").font(AuraStyle.displayFont(size: 17))
+                Spacer()
+                Text("\(step + 1) / 4")
+                    .font(AuraStyle.bodyMedium(size: 12))
+                    .foregroundStyle(AuraStyle.grayscale60)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                switch step {
+                case 0:
+                    Text("Welcome to Aura Dictate").font(.system(size: 26, weight: .bold))
+                    Text("Hold a shortcut, speak, and release it to paste your words. Let's set up the permissions Aura needs.")
+                    Text("Speech is transcribed on your Mac. You can revisit this guide from the menu bar.")
+                        .foregroundStyle(AuraStyle.grayscale70)
+                case 1:
+                    Text("Allow your microphone").font(.system(size: 26, weight: .bold))
+                    Text("Aura needs microphone access to hear you. Select the button below, then allow access in macOS.")
+                    Text("Pre-roll is on by default and keeps a short audio buffer in memory while Aura is idle. You can turn it off in the main window.")
+                        .foregroundStyle(AuraStyle.grayscale70)
+                    permissionStatus(controller.microphoneGranted)
+                    Button(controller.microphoneGranted ? "Microphone enabled" : "Allow microphone") {
+                        controller.promptMicrophonePermission()
+                    }
+                    .disabled(controller.microphoneGranted)
+                case 2:
+                    Text("Enable Accessibility").font(.system(size: 26, weight: .bold))
+                    Text("Accessibility lets Aura detect your shortcut and paste text into the active app.")
+                    Text("In Privacy & Security, open \(accessPaneName) and turn on Aura Dictate. If it isn't listed, use + to add it from Applications. If Aura still reports access is off, remove the old entry and add the app again.")
+                        .foregroundStyle(AuraStyle.grayscale70)
+                    permissionStatus(controller.accessibilityGranted)
+                    Button(controller.accessibilityGranted ? "Accessibility enabled" : "Open \(accessPaneName)") {
+                        controller.promptAccessibilityPermission()
+                    }
+                    .disabled(controller.accessibilityGranted)
+                default:
+                    Text("Try dictation").font(.system(size: 26, weight: .bold))
+                    Text("Click a text field in another app, hold Right Command while you speak, then release it. Aura will paste the finished text there.")
+                    Text("You can change the shortcut and appearance in Aura. Up to 50 transcripts are saved on this Mac until you clear the history.")
+                        .foregroundStyle(AuraStyle.grayscale70)
+                    if !controller.microphoneGranted || !controller.accessibilityGranted {
+                        Text("Some permissions are still off. You can finish setup later from the menu bar.")
+                            .foregroundStyle(AuraStyle.warning)
+                    }
+                }
+            }
+            .font(AuraStyle.bodyRegular(size: 15))
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(22)
+            .background(RoundedRectangle(cornerRadius: 14).fill(surface))
+
+            HStack {
+                Button("Set up later") { controller.finishOnboarding() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(AuraStyle.grayscale70)
+                Spacer()
+                if step > 0 {
+                    Button("Back") { controller.onboardingStep -= 1 }
+                }
+                Button(step == 3 ? "Open Aura" : "Continue") {
+                    if step == 3 { controller.finishOnboarding() }
+                    else { controller.onboardingStep += 1 }
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(accent)
+            }
+        }
+        .padding(28)
+        .frame(maxWidth: 620, maxHeight: 520)
+        .foregroundStyle(AuraStyle.grayscale100)
+    }
+
+    private func permissionStatus(_ granted: Bool) -> some View {
+        Label(granted ? "Enabled" : "Not enabled yet", systemImage: granted ? "checkmark.circle.fill" : "circle")
+            .font(AuraStyle.bodyMedium(size: 13))
+            .foregroundStyle(granted ? Color.green : AuraStyle.grayscale70)
+    }
+}
+
 // MARK: - Application Delegate & Window Management
 
 @MainActor
@@ -1596,7 +1714,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         studioWindow.center()
         studioWindow.isReleasedWhenClosed = false
         // Only pop open automatically on first launch if permissions are missing; otherwise stay quietly in the menu bar
-        if !controller.microphoneGranted || !controller.accessibilityGranted {
+        if controller.showOnboarding || !controller.microphoneGranted || !controller.accessibilityGranted {
             studioWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
         }
@@ -1613,12 +1731,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openItem.target = self
         menu.addItem(openItem)
 
+        let setupItem = NSMenuItem(title: "Setup Guide...", action: #selector(showSetupGuide), keyEquivalent: "")
+        setupItem.target = self
+        menu.addItem(setupItem)
+
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(title: "Quit Aura", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         menu.addItem(quitItem)
 
         statusItem.menu = menu
+    }
+
+    @objc func showSetupGuide() {
+        controller.onboardingStep = 0
+        controller.showOnboarding = true
+        showStudioWindow()
     }
 
     @objc func showStudioWindow() {

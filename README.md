@@ -35,6 +35,8 @@ A Developer ID signature can be supplied with `SIGN_IDENTITY`. Ad hoc builds may
 
 ## Use
 
+On first launch, the setup guide walks you through microphone and Accessibility access. You can open it again with **Setup Guide** in the menu bar. If macOS does not show a permission prompt, open Privacy & Security in System Settings and enable Aura Dictate under Microphone and Accessibility. On macOS versions that show Device Control and Data Access, use that page for Accessibility access. If Aura still reports that access is off, remove its old entry and add the app from Applications again.
+
 Open **Settings & History** from the menu bar icon. Hold the configured shortcut to dictate, then release it to finish. The default shortcut is Right Command. Fn and Right Option are also available. You can start and stop recording in the main window.
 
 Use **Appearance** in the main window to change the background, panel, accent, logo color, outline color, logo shape, box shape, and outline width. These preferences also apply to the floating transcription display. Choose **Reset appearance** to restore the defaults.
