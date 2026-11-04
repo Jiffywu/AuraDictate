@@ -9,7 +9,7 @@ Hold a key, talk, and let go. Your words appear wherever you're typing. Aura liv
     <img src="docs/auradictate-demo.gif" alt="Aura Dictate — On-Device Push-to-Talk Dictation for macOS" width="100%" />
   </a>
   <br />
-  <sub><a href="https://github.com/Jiffywu/AuraDictate/releases/download/v1.1.0/auradictate-promo.mp4">▶ Watch full 1080p60 video with sound (MP4)</a> · <a href="https://github.com/Jiffywu/AuraDictate/releases/latest/download/AuraDictate.dmg">⬇ Download AuraDictate.dmg (530 KB)</a></sub>
+  <sub><a href="https://github.com/Jiffywu/AuraDictate/releases/download/v1.1.0/auradictate-promo.mp4">▶ Watch full 1080p60 video with sound (MP4)</a> · <a href="https://github.com/Jiffywu/AuraDictate/releases/latest/download/AuraDictate.dmg">⬇ Download AuraDictate.dmg (534 KB)</a></sub>
 </p>
 
 ## Why it feels fast
@@ -18,8 +18,8 @@ Aura transcribes while you talk, so there's very little left to do when you let 
 
 It also keeps the last 380 ms of audio in memory, so your first word doesn't get cut off.
 
-- **Download:** 530 KB
-- **Installed:** 760 KB
+- **Download:** 534 KB
+- **Installed:** 762 KB
 - **Memory:** 14–16 MB when idle and 17–20 MB after dictating, depending on the Mac, plus Apple's speech service while you dictate
 - **CPU:** under 1% of one core when idle
 
@@ -51,7 +51,7 @@ macOS may download its English speech model the first time Aura starts.
 
 ## Install
 
-**Download:** Open [`AuraDictate.dmg`](https://github.com/Jiffywu/AuraDictate/releases/latest/download/AuraDictate.dmg) and drag Aura Dictate into Applications. This build isn't notarized yet, so macOS may block it the first time. If it does, open System Settings > Privacy & Security and choose **Open Anyway**, or use the Terminal install below.
+**Download:** Open [`AuraDictate.dmg`](https://github.com/Jiffywu/AuraDictate/releases/latest/download/AuraDictate.dmg) and drag Aura Dictate into Applications.
 
 **Terminal:**
 
