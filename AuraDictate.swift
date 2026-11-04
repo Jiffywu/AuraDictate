@@ -1776,6 +1776,7 @@ struct StudioMainView: View {
                 Text("[KEY]")
                     .font(AuraStyle.mono(size: 10.5, weight: .semibold))
                     .foregroundStyle(AuraStyle.grayscale60)
+                    .fixedSize()
 
                 Picker("", selection: $controller.triggerKey) {
                     ForEach(TriggerKeyOption.allCases) { option in
@@ -1794,6 +1795,7 @@ struct StudioMainView: View {
                 .font(AuraStyle.bodyMedium(size: 12.5))
                 .foregroundStyle(AuraStyle.grayscale90)
                 .tint(accent)
+                .fixedSize()
 
             Rectangle()
                 .fill(outline.opacity(0.6))
@@ -1803,6 +1805,7 @@ struct StudioMainView: View {
                 .font(AuraStyle.bodyMedium(size: 12.5))
                 .foregroundStyle(AuraStyle.grayscale90)
                 .tint(accent)
+                .fixedSize()
 
             Rectangle()
                 .fill(outline.opacity(0.6))
@@ -1812,6 +1815,7 @@ struct StudioMainView: View {
                 .font(AuraStyle.bodyMedium(size: 12.5))
                 .foregroundStyle(AuraStyle.grayscale90)
                 .tint(accent)
+                .fixedSize()
 
             Spacer()
         }

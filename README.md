@@ -1,6 +1,14 @@
 # Aura Dictate
 
-Aura Dictate is a macOS menu bar app for push-to-talk dictation. It uses Apple's SpeechAnalyzer and SpeechTranscriber to transcribe speech on device. The interface includes an original voice-wave mark and customizable appearance settings.
+Aura Dictate is a macOS menu bar app for push-to-talk dictation. It uses Apple's `SpeechAnalyzer` and `SpeechTranscriber` to transcribe speech on device with an original voice-wave mark, a 380ms pre-roll ring buffer, and a live customizable industrial chassis.
+
+<p align="center">
+  <a href="https://github.com/Jiffywu/AuraDictate-public/releases/download/v1.1.0/auradictate-promo.mp4">
+    <img src="docs/auradictate-demo.gif" alt="Aura Dictate — On-Device Push-to-Talk Dictation for macOS" width="100%" />
+  </a>
+  <br />
+  <sub><a href="https://github.com/Jiffywu/AuraDictate-public/releases/download/v1.1.0/auradictate-promo.mp4">▶ Watch full 1080p60 video with sound (MP4)</a> · <a href="https://github.com/Jiffywu/AuraDictate-public/releases/latest/download/AuraDictate.dmg">⬇ Download AuraDictate.dmg (1.1 MB)</a></sub>
+</p>
 
 ## Principles
 
