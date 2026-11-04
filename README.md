@@ -1,0 +1,52 @@
+# Aura Dictate
+
+Aura Dictate is a macOS menu bar app for push-to-talk dictation. It uses Apple's SpeechAnalyzer and SpeechTranscriber to transcribe speech on device. The interface includes an original voice-wave mark and customizable appearance settings.
+
+## Principles
+
+- Keep dictation close at hand with a menu bar app and a push-to-talk shortcut.
+- Use Apple's on-device speech tools and keep the audio pre-roll in memory.
+- Give people control over the app's appearance, shortcuts, and clipboard behavior.
+- Keep the source small enough to read and modify.
+
+## Requirements
+
+- An Apple silicon Mac running macOS 26 or later.
+- Xcode or Command Line Tools with the macOS 26 SDK or newer.
+- Microphone access. Accessibility access is required for the global shortcut and automatic paste.
+- The English (United States) speech model. macOS may download speech assets when the app starts.
+
+The app currently uses `en_US` and does not offer a language picker.
+
+## Build and run
+
+```sh
+./build.sh
+open build/AuraDictate.app
+```
+
+The default build is ad hoc signed and stays in `build/`. To build elsewhere, pass a destination:
+
+```sh
+./build.sh /path/to/AuraDictate.app
+```
+
+A Developer ID signature can be supplied with `SIGN_IDENTITY`. Ad hoc builds may require permissions to be granted again after rebuilding. Distribution outside your own Mac requires signing and notarization appropriate for your release.
+
+## Use
+
+Open **Settings & History** from the menu bar icon. Hold the configured shortcut to dictate, then release it to finish. The default shortcut is Right Command. Fn and Right Option are also available. You can start and stop recording in the main window.
+
+Use **Appearance** in the main window to change the background, panel, accent, logo color, outline color, logo shape, box shape, and outline width. These preferences also apply to the floating transcription display. Choose **Reset appearance** to restore the defaults.
+
+Pre-roll is enabled by default. When microphone access is granted, this keeps audio capture running so the app can retain a short in-memory buffer before the shortcut is pressed. Turn off Pre-roll in the main window to stop capture while idle. Auto-paste uses the clipboard and attempts to restore its previous contents after pasting.
+
+## Privacy
+
+The app stores up to 50 transcripts in local user defaults until you clear history. They are not encrypted by the app. Audio pre-roll is kept in memory. The app does not implement a network upload for audio or transcripts, but macOS may download speech assets. Review Apple's speech feature behavior for your macOS version and configuration before relying on this description for a privacy policy.
+
+## Source and license
+
+`AuraDictate.swift` contains the app, capture pipeline, and UI. `AuraMark.svg` is the editable logo and `scripts/generate-icon.swift` generates the app icon. To regenerate it, run `swift scripts/generate-icon.swift /tmp/AuraIcon.iconset` followed by `iconutil -c icns /tmp/AuraIcon.iconset -o AppIcon.icns`.
+
+The source is offered under the MIT license in `LICENSE`. Verify that you have the rights to release the original source and any contributions before publishing.
