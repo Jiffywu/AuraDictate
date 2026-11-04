@@ -1,6 +1,6 @@
 cask "auradictate" do
-  version "1.1.0"
-  sha256 "fc66231aa8d6bd02009b8d82a22f5a79e9857e1e3c96b88a9fdbf0535968c4cb"
+  version "1.2.0"
+  sha256 "1d8c5117b5e4f06fc73fea34c200d2269239481d6e2c6414f25c1134c62896f5"
 
   url "https://github.com/Jiffywu/AuraDictate/releases/download/v#{version}/AuraDictate-macos-arm64.zip"
   name "Aura Dictate"
