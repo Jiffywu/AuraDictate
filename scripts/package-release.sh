@@ -26,7 +26,7 @@ hdiutil create \
     -volname "Aura Dictate" \
     -srcfolder "$STAGE_DMG" \
     -ov \
-    -format UDZO \
+    -format ULMO \
     "$DIST_DIR/AuraDictate.dmg" >/dev/null
 
 rm -rf "$STAGE_DMG"

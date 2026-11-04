@@ -22,12 +22,14 @@
     <string>2</string>
     <key>LSMinimumSystemVersion</key>
     <string>26.0</string>
+    <key>LSAppNapIsDisabled</key>
+    <true/>
     <key>LSUIElement</key>
     <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>AuraDictate needs microphone access for instant, zero-cutoff live voice dictation using Apple Native Speech.</string>
+    <string>AuraDictate uses the microphone to transcribe your dictation and keeps a short in-memory buffer so your first word isn't cut off.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>AuraDictate uses on-device Apple Native Speech recognition to transcribe your voice in real time.</string>
 </dict>

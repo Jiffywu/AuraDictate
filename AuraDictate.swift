@@ -1,7 +1,9 @@
 import AppKit
 import SwiftUI
 import AVFoundation
-import CoreMedia
+import AudioToolbox
+import Combine
+import CoreAudio
 import Speech
 import CoreText
 import Carbon.HIToolbox
@@ -99,12 +101,30 @@ enum AuraStyle {
         }
     }
 
-    static func color(_ hex: String, fallback: UInt32) -> Color {
+    private static func rgb(_ hex: String, fallback: UInt32) -> (red: Double, green: Double, blue: Double) {
         let cleaned = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
         let value = UInt32(cleaned, radix: 16) ?? fallback
-        return Color(red: Double((value >> 16) & 255) / 255,
-                     green: Double((value >> 8) & 255) / 255,
-                     blue: Double(value & 255) / 255)
+        return (Double((value >> 16) & 255) / 255, Double((value >> 8) & 255) / 255, Double(value & 255) / 255)
+    }
+
+    /// Loads one bundled font without registering the whole set, which costs several MB.
+    static func bundledFont(_ fileName: String, size: CGFloat) -> NSFont? {
+        guard let url = Bundle.main.url(forResource: fileName, withExtension: "otf", subdirectory: "Fonts"),
+              let descriptors = CTFontManagerCreateFontDescriptorsFromURL(url as CFURL) as? [CTFontDescriptor],
+              let descriptor = descriptors.first else {
+            return nil
+        }
+        return CTFontCreateWithFontDescriptor(descriptor, size, nil) as NSFont
+    }
+
+    static func color(_ hex: String, fallback: UInt32) -> Color {
+        let value = rgb(hex, fallback: fallback)
+        return Color(red: value.red, green: value.green, blue: value.blue)
+    }
+
+    static func nsColor(_ hex: String, fallback: UInt32) -> NSColor {
+        let value = rgb(hex, fallback: fallback)
+        return NSColor(srgbRed: value.red, green: value.green, blue: value.blue, alpha: 1)
     }
 
     static func hex(_ color: Color) -> String {
@@ -305,164 +325,200 @@ enum TriggerKeyOption: String, CaseIterable, Identifiable {
     }
 }
 
-// MARK: - Serialized Capture & Frame/PTS Pre-Roll Pipeline
+// MARK: - Audio Capture
 
-/// Runs exclusively on `captureQueue`.
+/// Holds the pre-roll and forwards live audio to the analyzer.
+/// The microphone thread and the main actor both call in, so `lock` guards all state.
 final class CapturePipelineState: @unchecked Sendable {
-    let targetFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: false)!
+    private static let ringCapacity = 16_000 // 1 second, the longest pre-roll
+    private static let maxPreRollAge = 1.2
 
-    private var preRollBuffers: [(endTime: Double, buffer: AVAudioPCMBuffer)] = []
-    private var totalBufferedFrames: Int = 0
-    private var maxPreRollFrames: Int = 6080 // 380ms @ 16kHz
+    let targetFormat = AVAudioFormat(commonFormat: .pcmFormatInt16, sampleRate: 16000, channels: 1, interleaved: false)!
+    var onLevel: (@Sendable (CGFloat) -> Void)?
+
+    private let lock = NSLock()
+    private let ring = UnsafeMutablePointer<Int16>.allocate(capacity: ringCapacity)
+    private var ringEnd = 0
+    private var ringCount = 0
+    private var lastIngestTime: Double = 0
+    private var maxPreRollFrames = 6080 // 380ms @ 16kHz
     private var activeContinuation: AsyncStream<AnalyzerInput>.Continuation?
+
+    deinit {
+        ring.deallocate()
+    }
 
     func setPreRollMilliseconds(_ ms: Double) {
         let clampedMs = max(100.0, min(1000.0, ms))
-        maxPreRollFrames = Int((clampedMs / 1000.0) * 16000.0)
-        trimPreRollToLimit()
+        lock.withLock { maxPreRollFrames = Int((clampedMs / 1000.0) * 16000.0) }
     }
 
     func clearPreRoll() {
-        preRollBuffers.removeAll(keepingCapacity: true)
-        totalBufferedFrames = 0
+        lock.withLock { ringCount = 0 }
     }
 
     func beginStreaming(
         continuation: AsyncStream<AnalyzerInput>.Continuation,
         includePreRoll: Bool
     ) {
-        activeContinuation?.finish()
-        if includePreRoll {
-            let now = CACurrentMediaTime()
-            preRollBuffers.removeAll { now - $0.endTime > 1.2 }
-            totalBufferedFrames = preRollBuffers.reduce(0) { $0 + Int($1.buffer.frameLength) }
-            trimPreRollToLimit()
-            for item in preRollBuffers {
-                continuation.yield(AnalyzerInput(buffer: item.buffer))
+        lock.withLock {
+            activeContinuation?.finish()
+            let isFresh = CACurrentMediaTime() - lastIngestTime <= Self.maxPreRollAge
+            if includePreRoll, isFresh, let buffer = makePreRollBuffer() {
+                continuation.yield(AnalyzerInput(buffer: buffer))
             }
+            ringCount = 0
+            activeContinuation = continuation
         }
-        preRollBuffers.removeAll(keepingCapacity: true)
-        totalBufferedFrames = 0
-        activeContinuation = continuation
     }
 
     func endStreaming() {
-        let cont = activeContinuation
-        activeContinuation = nil
-        cont?.finish()
+        lock.withLock {
+            activeContinuation?.finish()
+            activeContinuation = nil
+        }
     }
 
-    func processSampleBuffer(_ sampleBuffer: CMSampleBuffer) -> CGFloat? {
-        guard CMSampleBufferDataIsReady(sampleBuffer) else { return nil }
-        let numSamples = CMSampleBufferGetNumSamples(sampleBuffer)
-        guard numSamples > 0,
-              let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer),
-              let asbdPtr = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc) else {
+    func ingest(_ samples: UnsafePointer<Int16>, frameCount: Int) {
+        guard frameCount > 0 else { return }
+        lock.lock()
+        lastIngestTime = CACurrentMediaTime()
+        guard let continuation = activeContinuation else {
+            writeToRing(samples, frameCount: frameCount)
+            lock.unlock()
+            return
+        }
+        if let buffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: AVAudioFrameCount(frameCount)),
+           let destination = buffer.int16ChannelData?[0] {
+            buffer.frameLength = AVAudioFrameCount(frameCount)
+            destination.update(from: samples, count: frameCount)
+            continuation.yield(AnalyzerInput(buffer: buffer))
+        }
+        lock.unlock()
+
+        var sumSquares: Float = 0
+        for i in 0..<frameCount {
+            let norm = Float(samples[i]) / 32768.0
+            sumSquares += norm * norm
+        }
+        let rms = sqrt(sumSquares / Float(frameCount))
+        onLevel?(CGFloat(min(1.0, max(0.06, pow(rms * 6.5, 0.65)))))
+    }
+
+    private func writeToRing(_ samples: UnsafePointer<Int16>, frameCount: Int) {
+        let capacity = Self.ringCapacity
+        let count = min(frameCount, capacity)
+        let source = samples + (frameCount - count)
+        let firstPart = min(count, capacity - ringEnd)
+        (ring + ringEnd).update(from: source, count: firstPart)
+        ring.update(from: source + firstPart, count: count - firstPart)
+        ringEnd = (ringEnd + count) % capacity
+        ringCount = min(capacity, ringCount + count)
+    }
+
+    private func makePreRollBuffer() -> AVAudioPCMBuffer? {
+        let capacity = Self.ringCapacity
+        let count = min(ringCount, maxPreRollFrames)
+        guard count > 0,
+              let buffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: AVAudioFrameCount(count)),
+              let destination = buffer.int16ChannelData?[0] else {
             return nil
         }
+        buffer.frameLength = AVAudioFrameCount(count)
+        let start = (ringEnd - count + capacity) % capacity
+        let firstPart = min(count, capacity - start)
+        destination.update(from: ring + start, count: firstPart)
+        (destination + firstPart).update(from: ring, count: count - firstPart)
+        return buffer
+    }
+}
 
-        let asbd = asbdPtr.pointee
-        let isSignedInt = (asbd.mFormatFlags & kAudioFormatFlagIsSignedInteger) != 0
-        let isBigEndian = (asbd.mFormatFlags & kAudioFormatFlagIsBigEndian) != 0
-        let isNonInterleaved = (asbd.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0
-        guard asbd.mFormatID == kAudioFormatLinearPCM,
-              abs(asbd.mSampleRate - 16000.0) < 1.0,
-              asbd.mBitsPerChannel == 16,
-              asbd.mChannelsPerFrame >= 1,
-              isSignedInt,
-              !isBigEndian else {
-            return nil
-        }
+/// Reads the default microphone through an AudioQueue, which costs far less idle CPU
+/// than AVCaptureSession. `start` and `stop` run on the capture queue.
+final class MicCapture: @unchecked Sendable {
+    private static let framesPerBuffer: UInt32 = 512 // 32ms @ 16kHz
+    private static let bufferCount = 3
 
-        var blockBuffer: CMBlockBuffer?
-        var audioBufferList = AudioBufferList()
-        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            sampleBuffer,
-            bufferListSizeNeededOut: nil,
-            bufferListOut: &audioBufferList,
-            bufferListSize: MemoryLayout<AudioBufferList>.size,
-            blockBufferAllocator: nil,
-            blockBufferMemoryAllocator: nil,
-            flags: 0,
-            blockBufferOut: &blockBuffer
+    private let pipeline: CapturePipelineState
+    private let captureQueue: DispatchQueue
+    private var audioQueue: AudioQueueRef?
+    var onUnexpectedStop: (@Sendable () -> Void)?
+
+    init(pipeline: CapturePipelineState, captureQueue: DispatchQueue) {
+        self.pipeline = pipeline
+        self.captureQueue = captureQueue
+    }
+
+    static var hasInputDevice: Bool {
+        var address = systemAddress(kAudioHardwarePropertyDefaultInputDevice)
+        var device = AudioDeviceID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device)
+        return status == noErr && device != kAudioObjectUnknown
+    }
+
+    static func systemAddress(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+    }
+
+    func start() -> Bool {
+        guard audioQueue == nil else { return true }
+        var format = AudioStreamBasicDescription(
+            mSampleRate: 16000,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked,
+            mBytesPerPacket: 2,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 2,
+            mChannelsPerFrame: 1,
+            mBitsPerChannel: 16,
+            mReserved: 0
         )
-        guard status == noErr,
-              audioBufferList.mNumberBuffers >= 1,
-              let rawPtr = audioBufferList.mBuffers.mData else {
-            return nil
-        }
+        var created: AudioQueueRef?
+        let context = Unmanaged.passUnretained(self).toOpaque()
+        let status = AudioQueueNewInput(&format, { context, queue, buffer, _, packetCount, _ in
+            let mic = Unmanaged<MicCapture>.fromOpaque(context!).takeUnretainedValue()
+            let samples = buffer.pointee.mAudioData.assumingMemoryBound(to: Int16.self)
+            mic.pipeline.ingest(samples, frameCount: Int(packetCount))
+            AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
+        }, context, nil, nil, 0, &created)
+        guard status == noErr, let queue = created else { return false }
 
-        let channels = isNonInterleaved ? 1 : Int(max(1, asbd.mChannelsPerFrame))
-        let availableInt16Count = Int(audioBufferList.mBuffers.mDataByteSize) / MemoryLayout<Int16>.size
-        let frameCount = min(numSamples, availableInt16Count / channels)
-        guard frameCount > 0,
-              let pcmBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: AVAudioFrameCount(frameCount)),
-              let dstChannel = pcmBuffer.int16ChannelData?[0] else {
-            return nil
-        }
-        pcmBuffer.frameLength = AVAudioFrameCount(frameCount)
-
-        let srcSamples = rawPtr.assumingMemoryBound(to: Int16.self)
-        if channels == 1 {
-            memcpy(dstChannel, srcSamples, frameCount * MemoryLayout<Int16>.size)
-        } else {
-            for i in 0..<frameCount {
-                dstChannel[i] = srcSamples[i * channels]
+        for _ in 0..<Self.bufferCount {
+            var buffer: AudioQueueBufferRef?
+            AudioQueueAllocateBuffer(queue, Self.framesPerBuffer * 2, &buffer)
+            if let buffer {
+                AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
             }
         }
+        AudioQueueAddPropertyListener(queue, kAudioQueueProperty_IsRunning, { context, queue, _ in
+            let mic = Unmanaged<MicCapture>.fromOpaque(context!).takeUnretainedValue()
+            mic.captureQueue.async { mic.handleRunningChange(queue) }
+        }, context)
 
-        if let continuation = activeContinuation {
-            continuation.yield(AnalyzerInput(buffer: pcmBuffer))
-
-            var sumSquares: Float = 0
-            for i in 0..<frameCount {
-                let norm = Float(dstChannel[i]) / 32768.0
-                sumSquares += norm * norm
-            }
-            let rms = sqrt(sumSquares / Float(frameCount))
-            return CGFloat(min(1.0, max(0.06, pow(rms * 6.5, 0.65))))
-        } else {
-            appendToPreRoll(pcmBuffer)
-            return nil
+        guard AudioQueueStart(queue, nil) == noErr else {
+            AudioQueueDispose(queue, true)
+            return false
         }
+        audioQueue = queue
+        return true
     }
 
-    private func appendToPreRoll(_ buffer: AVAudioPCMBuffer) {
-        let frames = Int(buffer.frameLength)
-        guard frames > 0, maxPreRollFrames > 0 else { return }
-        preRollBuffers.append((CACurrentMediaTime(), buffer))
-        totalBufferedFrames += frames
-        trimPreRollToLimit()
+    func stop() {
+        guard let queue = audioQueue else { return }
+        audioQueue = nil
+        AudioQueueStop(queue, true)
+        AudioQueueDispose(queue, true)
     }
 
-    private func trimPreRollToLimit() {
-        while totalBufferedFrames > maxPreRollFrames, let first = preRollBuffers.first {
-            let firstFrames = Int(first.buffer.frameLength)
-            let excessFrames = totalBufferedFrames - maxPreRollFrames
-            if excessFrames >= firstFrames {
-                preRollBuffers.removeFirst()
-                totalBufferedFrames -= firstFrames
-            } else if let trimmed = Self.sliceBuffer(first.buffer, startFrame: excessFrames, frameCount: firstFrames - excessFrames) {
-                preRollBuffers[0] = (first.endTime, trimmed)
-                totalBufferedFrames -= excessFrames
-            } else {
-                break
-            }
+    private func handleRunningChange(_ queue: AudioQueueRef) {
+        guard queue == audioQueue else { return }
+        var isRunning: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioQueueGetProperty(queue, kAudioQueueProperty_IsRunning, &isRunning, &size)
+        if status != noErr || isRunning == 0 {
+            onUnexpectedStop?()
         }
-    }
-
-    private static func sliceBuffer(_ source: AVAudioPCMBuffer, startFrame: Int, frameCount: Int) -> AVAudioPCMBuffer? {
-        guard frameCount > 0,
-              startFrame >= 0,
-              startFrame + frameCount <= Int(source.frameLength),
-              let srcData = source.int16ChannelData?[0],
-              let sliced = AVAudioPCMBuffer(pcmFormat: source.format, frameCapacity: AVAudioFrameCount(frameCount)),
-              let dstData = sliced.int16ChannelData?[0] else {
-            return nil
-        }
-        sliced.frameLength = AVAudioFrameCount(frameCount)
-        memcpy(dstData, srcData.advanced(by: startFrame), frameCount * MemoryLayout<Int16>.size)
-        return sliced
     }
 }
 
@@ -484,9 +540,15 @@ final class DictationController: NSObject, ObservableObject {
     @Published var finalizedTranscript: String = ""
     @Published var audioLevels: [CGFloat] = Array(repeating: 0.08, count: 28)
     @Published var history: [TranscriptRecord] = []
-    @Published var accessibilityGranted: Bool = false
-    @Published var microphoneGranted: Bool = false
-    @Published var captureReady: Bool = false
+    @Published var accessibilityGranted: Bool = false {
+        didSet { updatePermissionPolling() }
+    }
+    @Published var microphoneGranted: Bool = false {
+        didSet { updatePermissionPolling() }
+    }
+    @Published var captureReady: Bool = false {
+        didSet { updatePermissionPolling() }
+    }
     @Published var errorMessage: String? = nil
 
     // User Settings
@@ -496,17 +558,14 @@ final class DictationController: NSObject, ObservableObject {
         didSet {
             guard !isLoadingSettings else { return }
             UserDefaults.standard.set(instantPreRollEnabled, forKey: "instantPreRollEnabled")
-            syncCaptureSessionState()
+            updateMic()
         }
     }
     @Published var preRollMs: Double = 380 {
         didSet {
             guard !isLoadingSettings else { return }
             UserDefaults.standard.set(preRollMs, forKey: "preRollMs")
-            let ms = preRollMs
-            captureQueue.async { [pipeline] in
-                pipeline.setPreRollMilliseconds(ms)
-            }
+            pipeline.setPreRollMilliseconds(preRollMs)
         }
     }
     @Published var autoPasteEnabled: Bool = true {
@@ -535,11 +594,9 @@ final class DictationController: NSObject, ObservableObject {
     }
 
     // Serialized Capture & Pipeline Internals
-    nonisolated let captureSession = AVCaptureSession()
-    nonisolated let audioOutput = AVCaptureAudioDataOutput()
     nonisolated let captureQueue = DispatchQueue(label: "app.auradictate.public.capture", qos: .userInteractive)
     nonisolated let pipeline = CapturePipelineState()
-    nonisolated(unsafe) private var isSessionConfigured: Bool = false
+    nonisolated let mic: MicCapture
 
     // SpeechAnalyzer State
     private var preparedAnalyzer: SpeechAnalyzer?
@@ -551,6 +608,15 @@ final class DictationController: NSObject, ObservableObject {
     private var activeStartupTask: Task<Bool, Never>?
     private var activeResultsTask: Task<Void, Never>?
     private var activeFinalizationTasks: [UUID: Task<Void, Never>] = [:]
+    private var analyzerDrainTask: Task<Void, Never>?
+    /// One dictation's text, so starting a new dictation can't wipe one that's still finishing.
+    private final class TranscriptBuffer {
+        var finalized = ""
+        var volatile = ""
+    }
+    private var activeBuffer: TranscriptBuffer?
+
+    private var soundIDs: [String: SystemSoundID] = [:]
     private var recordingStartTime: CFAbsoluteTime = 0
     private var targetPasteAppPID: pid_t? = nil
 
@@ -559,6 +625,7 @@ final class DictationController: NSObject, ObservableObject {
         let representations: [(NSPasteboard.PasteboardType, Data)]
     }
     private var savedUserClipboard: [PasteboardItemSnapshot]? = nil
+    private var snapshotChangeCount: Int? = nil
     private var lastDictationChangeCount: Int? = nil
     private var clipboardRestoreWorkItem: DispatchWorkItem? = nil
 
@@ -571,13 +638,23 @@ final class DictationController: NSObject, ObservableObject {
     private var eventTap: CFMachPort?
     private var eventTapSource: CFRunLoopSource?
     private var permissionTimer: Timer?
-    private var deviceObservers: [NSObjectProtocol] = []
+    private var deviceListener: AudioObjectPropertyListenerBlock?
+    private var accessibilityObserver: NSObjectProtocol?
     private var isShutDown: Bool = false
 
     var onHUDVisibilityChange: ((Bool) -> Void)?
 
+    private static let deviceSelectors = [kAudioHardwarePropertyDefaultInputDevice, kAudioHardwarePropertyDevices]
+
     override init() {
+        mic = MicCapture(pipeline: pipeline, captureQueue: captureQueue)
         super.init()
+        pipeline.onLevel = { [weak self] level in
+            Task { @MainActor [weak self] in self?.pushAudioLevel(level) }
+        }
+        mic.onUnexpectedStop = { [weak self] in
+            Task { @MainActor [weak self] in self?.updateMic(restart: true) }
+        }
         loadSettings()
         installDeviceObservers()
         installKeyboardMonitors()
@@ -585,10 +662,18 @@ final class DictationController: NSObject, ObservableObject {
         warmUpTask = Task { [weak self] in
             await self?.ensureSpeechAssetsAndWarmUp()
         }
-        permissionTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                self.refreshPermissionsAndConfigureIfNeeded()
+        updatePermissionPolling()
+    }
+
+    /// Polls only until everything works, so a set-up app has no timer waking it.
+    private func updatePermissionPolling() {
+        let isReady = accessibilityGranted && microphoneGranted && captureReady
+        if isReady || isShutDown {
+            permissionTimer?.invalidate()
+            permissionTimer = nil
+        } else if permissionTimer == nil {
+            permissionTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.refreshPermissionsAndConfigureIfNeeded() }
             }
         }
     }
@@ -622,10 +707,7 @@ final class DictationController: NSObject, ObservableObject {
             }
         }
 
-        let initialMs = preRollMs
-        captureQueue.async { [pipeline] in
-            pipeline.setPreRollMilliseconds(initialMs)
-        }
+        pipeline.setPreRollMilliseconds(preRollMs)
 
         if let data = defaults.data(forKey: "dictationHistory"),
            let decoded = try? JSONDecoder().decode([TranscriptRecord].self, from: data) {
@@ -646,21 +728,24 @@ final class DictationController: NSObject, ObservableObject {
         if trusted && !accessibilityGranted {
             installCGEventTapIfNeeded()
         }
-        accessibilityGranted = trusted
+        if trusted != accessibilityGranted {
+            accessibilityGranted = trusted
+        }
 
         let micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
         let wasGranted = microphoneGranted
-        microphoneGranted = (micStatus == .authorized)
+        let isGranted = micStatus == .authorized
+        if isGranted != wasGranted {
+            microphoneGranted = isGranted
+        }
 
-        if micStatus == .authorized {
+        if isGranted {
             if errorMessage == "Microphone permission required" { errorMessage = nil }
-            if !wasGranted || !captureReady {
-                rebuildCaptureSessionInput()
-            } else {
-                syncCaptureSessionState()
-            }
+            updateMic(restart: !wasGranted || !captureReady)
         } else {
-            captureReady = false
+            if captureReady {
+                captureReady = false
+            }
             if micStatus == .denied || micStatus == .restricted {
                 errorMessage = "Microphone permission required"
             }
@@ -702,108 +787,73 @@ final class DictationController: NSObject, ObservableObject {
     }
 
     private func installDeviceObservers() {
-        let nc = NotificationCenter.default
-        let connected = nc.addObserver(forName: AVCaptureDevice.wasConnectedNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.rebuildCaptureSessionInput() }
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor [weak self] in self?.updateMic(restart: true) }
         }
-        let disconnected = nc.addObserver(forName: AVCaptureDevice.wasDisconnectedNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.rebuildCaptureSessionInput() }
+        deviceListener = listener
+        for selector in Self.deviceSelectors {
+            var address = MicCapture.systemAddress(selector)
+            AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, listener)
         }
-        let runtimeErr = nc.addObserver(forName: AVCaptureSession.runtimeErrorNotification, object: captureSession, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.rebuildCaptureSessionInput() }
+
+        accessibilityObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.accessibility.api"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            // macOS posts this just before the new trust state is readable.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                self?.refreshPermissionsAndConfigureIfNeeded()
+            }
         }
-        deviceObservers = [connected, disconnected, runtimeErr]
     }
 
-    private func rebuildCaptureSessionInput() {
+    private func updateMic(restart: Bool = false) {
         guard microphoneGranted else { return }
         let shouldRun = instantPreRollEnabled || state != .idle
         captureQueue.async { [weak self] in
             guard let self else { return }
-            self.pipeline.clearPreRoll()
-
-            guard let device = AVCaptureDevice.default(for: .audio),
-                  let newInput = try? AVCaptureDeviceInput(device: device) else {
-                self.isSessionConfigured = false
-                Task { @MainActor [weak self] in
-                    self?.captureReady = false
-                    self?.errorMessage = "No microphone available"
-                }
-                return
+            if restart || !shouldRun {
+                self.mic.stop()
+                self.pipeline.clearPreRoll()
             }
-
-            self.captureSession.beginConfiguration()
-            for oldInput in self.captureSession.inputs {
-                self.captureSession.removeInput(oldInput)
-            }
-
-            self.audioOutput.audioSettings = [
-                AVFormatIDKey: kAudioFormatLinearPCM,
-                AVSampleRateKey: 16000,
-                AVNumberOfChannelsKey: 1,
-                AVLinearPCMBitDepthKey: 16,
-                AVLinearPCMIsBigEndianKey: false,
-                AVLinearPCMIsFloatKey: false,
-                AVLinearPCMIsNonInterleaved: false
-            ]
-            self.audioOutput.setSampleBufferDelegate(self, queue: self.captureQueue)
-
-            var outputOK = self.captureSession.outputs.contains(self.audioOutput)
-            if !outputOK && self.captureSession.canAddOutput(self.audioOutput) {
-                self.captureSession.addOutput(self.audioOutput)
-                outputOK = true
-            }
-
-            var inputOK = false
-            if self.captureSession.canAddInput(newInput) {
-                self.captureSession.addInput(newInput)
-                inputOK = true
-            }
-            self.captureSession.commitConfiguration()
-
-            let configuredOK = outputOK && inputOK
-            self.isSessionConfigured = configuredOK
-
-            if configuredOK && shouldRun {
-                if !self.captureSession.isRunning {
-                    self.captureSession.startRunning()
-                }
-            } else if self.captureSession.isRunning {
-                self.captureSession.stopRunning()
-            }
+            let hasDevice = MicCapture.hasInputDevice
+            let isReady = hasDevice && (!shouldRun || self.mic.start())
 
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.captureReady = configuredOK
-                if configuredOK && self.errorMessage == "No microphone available" {
-                    self.errorMessage = nil
-                } else if !configuredOK {
-                    self.errorMessage = "Audio capture configuration failed"
+                if self.captureReady != isReady {
+                    self.captureReady = isReady
+                }
+                if isReady {
+                    if self.errorMessage == "No microphone available" || self.errorMessage == "Audio capture configuration failed" {
+                        self.errorMessage = nil
+                    }
+                } else {
+                    self.errorMessage = hasDevice ? "Audio capture configuration failed" : "No microphone available"
                 }
             }
         }
     }
 
-    private func syncCaptureSessionState() {
-        guard microphoneGranted else { return }
-        let shouldRun = instantPreRollEnabled || state != .idle
-        captureQueue.async { [weak self] in
-            guard let self else { return }
-            guard self.isSessionConfigured else {
-                Task { @MainActor [weak self] in self?.rebuildCaptureSessionInput() }
-                return
-            }
-            if shouldRun {
-                if !self.captureSession.isRunning {
-                    self.captureSession.startRunning()
-                }
-            } else {
-                if self.captureSession.isRunning {
-                    self.captureSession.stopRunning()
-                }
-                self.pipeline.clearPreRoll()
-            }
+    /// System sounds play in a separate service, which keeps audio playback out of this process.
+    private func playSound(_ name: String) {
+        guard soundEffectsEnabled else { return }
+        var soundID = soundIDs[name] ?? 0
+        if soundID == 0 {
+            let url = URL(fileURLWithPath: "/System/Library/Sounds/\(name).aiff")
+            AudioServicesCreateSystemSoundID(url as CFURL, &soundID)
+            soundIDs[name] = soundID
         }
+        AudioServicesPlaySystemSound(soundID)
+    }
+
+    private func pushAudioLevel(_ level: CGFloat) {
+        guard state == .recording, !audioLevels.isEmpty else { return }
+        var next = audioLevels
+        next.removeFirst()
+        next.append(level)
+        audioLevels = next
     }
 
     // MARK: - SpeechTranscriber Asset Verification & Pre-Warming
@@ -943,29 +993,16 @@ final class DictationController: NSObject, ObservableObject {
         state = .recording
         volatileTranscript = ""
         finalizedTranscript = ""
+        let buffer = TranscriptBuffer()
+        activeBuffer = buffer
         recordingStartTime = CFAbsoluteTimeGetCurrent()
         targetPasteAppPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        onHUDVisibilityChange?(true)
-
-        if soundEffectsEnabled {
-            NSSound(named: "Tink")?.play()
-        }
 
         let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream(
             bufferingPolicy: .bufferingNewest(512)
         )
-        let usePreRoll = instantPreRollEnabled
-
-        captureQueue.async { [weak self] in
-            guard let self else {
-                continuation.finish()
-                return
-            }
-            if !self.captureSession.isRunning {
-                self.captureSession.startRunning()
-            }
-            self.pipeline.beginStreaming(continuation: continuation, includePreRoll: usePreRoll)
-        }
+        pipeline.beginStreaming(continuation: continuation, includePreRoll: instantPreRollEnabled)
+        updateMic()
 
         let transcriber: SpeechTranscriber
         let analyzer: SpeechAnalyzer
@@ -983,10 +1020,6 @@ final class DictationController: NSObject, ObservableObject {
         activeTranscriber = transcriber
         activeAnalyzer = analyzer
 
-        warmUpTask = Task { [weak self] in
-            await self?.warmUpNextAnalyzer()
-        }
-
         activeResultsTask = Task { [weak self] in
             do {
                 for try await result in transcriber.results {
@@ -994,11 +1027,15 @@ final class DictationController: NSObject, ObservableObject {
                     let piece = String(result.text.characters).trimmingCharacters(in: .whitespacesAndNewlines)
                     if result.isFinal {
                         if !piece.isEmpty {
-                            self.finalizedTranscript = Self.appendSegment(existing: self.finalizedTranscript, next: piece)
+                            buffer.finalized = Self.appendSegment(existing: buffer.finalized, next: piece)
                         }
-                        self.volatileTranscript = ""
+                        buffer.volatile = ""
                     } else {
-                        self.volatileTranscript = piece
+                        buffer.volatile = piece
+                    }
+                    if self.activeBuffer === buffer {
+                        self.finalizedTranscript = buffer.finalized
+                        self.volatileTranscript = buffer.volatile
                     }
                 }
             } catch {
@@ -1008,7 +1045,10 @@ final class DictationController: NSObject, ObservableObject {
             }
         }
 
+        // Two analyzers can't run at once. Audio waits in the stream until the last one finishes.
+        let previousDrain = analyzerDrainTask
         activeStartupTask = Task { [weak self] in
+            await previousDrain?.value
             do {
                 try await analyzer.start(inputSequence: stream)
                 return true
@@ -1021,6 +1061,14 @@ final class DictationController: NSObject, ObservableObject {
                 return false
             }
         }
+
+        // Audio is already flowing, so everything below stays off the capture path.
+        onHUDVisibilityChange?(true)
+        playSound("Tink")
+        if autoPasteEnabled {
+            snapshotClipboardIfNeeded()
+        }
+        refreshPermissionsAndConfigureIfNeeded()
     }
 
     func stopDictation() {
@@ -1033,26 +1081,17 @@ final class DictationController: NSObject, ObservableObject {
         let sessionAnalyzer = activeAnalyzer
         let sessionStartupTask = activeStartupTask
         let sessionResultsTask = activeResultsTask
+        let sessionBuffer = activeBuffer
         activeAnalyzer = nil
         activeTranscriber = nil
         activeStartupTask = nil
         activeResultsTask = nil
 
-        let taskID = UUID()
-        let finalizeTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            defer { self.activeFinalizationTasks.removeValue(forKey: taskID) }
-
+        let drainTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 50_000_000)
 
-            if self.state == .finalizing {
-                let pipe = self.pipeline
-                await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
-                    self.captureQueue.async {
-                        pipe.endStreaming()
-                        done.resume()
-                    }
-                }
+            if self?.state == .finalizing {
+                self?.pipeline.endStreaming()
             }
 
             await withTaskGroup(of: Void.self) { group in
@@ -1078,13 +1117,31 @@ final class DictationController: NSObject, ObservableObject {
                 _ = await group.next()
                 group.cancelAll()
             }
+        }
+        analyzerDrainTask = drainTask
 
-            let latency = (CFAbsoluteTimeGetCurrent() - releaseTime) * 1000.0
+        let taskID = UUID()
+        let finalizeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { self.activeFinalizationTasks.removeValue(forKey: taskID) }
+
+            await drainTask.value
 
             let combined = Self.appendSegment(
-                existing: self.finalizedTranscript,
-                next: self.volatileTranscript
+                existing: sessionBuffer?.finalized ?? "",
+                next: sessionBuffer?.volatile ?? ""
             )
+
+            // Text reaches the user first. Bookkeeping waits until after the paste.
+            if combined.isEmpty {
+                self.discardClipboardSnapshot()
+            } else if self.autoPasteEnabled {
+                self.pasteTextIntoActiveApp(combined, expectedPID: capturedTargetPID)
+            } else {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(combined, forType: .string)
+            }
+            let latency = (CFAbsoluteTimeGetCurrent() - releaseTime) * 1000.0
 
             if !combined.isEmpty {
                 let record = TranscriptRecord(
@@ -1098,22 +1155,17 @@ final class DictationController: NSObject, ObservableObject {
                 self.history.insert(record, at: 0)
                 self.saveHistory()
 
-                if self.soundEffectsEnabled {
-                    NSSound(named: "Pop")?.play()
-                }
+                self.playSound("Pop")
+            }
 
-                if self.autoPasteEnabled {
-                    self.pasteTextIntoActiveApp(combined, expectedPID: capturedTargetPID)
-                } else {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(combined, forType: .string)
-                }
+            self.warmUpTask = Task { [weak self] in
+                await self?.warmUpNextAnalyzer()
             }
 
             if self.state == .finalizing {
                 self.state = .idle
                 self.audioLevels = Array(repeating: 0.08, count: 28)
-                self.syncCaptureSessionState()
+                self.updateMic()
 
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 if self.state == .idle {
@@ -1144,6 +1196,7 @@ final class DictationController: NSObject, ObservableObject {
             pb.clearContents()
             pb.setString(text, forType: .string)
             errorMessage = "Copied (Enable Accessibility for auto-paste)"
+            discardClipboardSnapshot()
             return
         }
 
@@ -1151,21 +1204,14 @@ final class DictationController: NSObject, ObservableObject {
         if let expectedPID, let currentFrontPID, currentFrontPID != expectedPID {
             pb.clearContents()
             pb.setString(text, forType: .string)
+            discardClipboardSnapshot()
             return
         }
 
         clipboardRestoreWorkItem?.cancel()
         clipboardRestoreWorkItem = nil
 
-        if savedUserClipboard == nil || (lastDictationChangeCount != nil && pb.changeCount != lastDictationChangeCount) {
-            savedUserClipboard = (pb.pasteboardItems ?? []).map { item in
-                let reps = item.types.compactMap { type -> (NSPasteboard.PasteboardType, Data)? in
-                    guard let data = item.data(forType: type) else { return nil }
-                    return (type, data)
-                }
-                return PasteboardItemSnapshot(representations: reps)
-            }
-        }
+        snapshotClipboardIfNeeded()
 
         pb.clearContents()
         pb.setString(text, forType: .string)
@@ -1187,6 +1233,7 @@ final class DictationController: NSObject, ObservableObject {
                 guard let self else { return }
                 defer {
                     self.savedUserClipboard = nil
+                    self.snapshotChangeCount = nil
                     self.lastDictationChangeCount = nil
                     self.clipboardRestoreWorkItem = nil
                 }
@@ -1209,9 +1256,37 @@ final class DictationController: NSObject, ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: workItem)
     }
 
+    /// Runs while the user is talking so a large clipboard can't delay the paste.
+    private func snapshotClipboardIfNeeded() {
+        let pb = NSPasteboard.general
+        let changeCount = pb.changeCount
+        // A pending restore already holds the user's clipboard, and ours is on the pasteboard.
+        guard changeCount != lastDictationChangeCount else { return }
+        guard savedUserClipboard == nil || changeCount != snapshotChangeCount else { return }
+        savedUserClipboard = (pb.pasteboardItems ?? []).map { item in
+            let reps = item.types.compactMap { type -> (NSPasteboard.PasteboardType, Data)? in
+                guard let data = item.data(forType: type) else { return nil }
+                return (type, data)
+            }
+            return PasteboardItemSnapshot(representations: reps)
+        }
+        snapshotChangeCount = changeCount
+    }
+
+    private func discardClipboardSnapshot() {
+        guard clipboardRestoreWorkItem == nil else { return }
+        savedUserClipboard = nil
+        snapshotChangeCount = nil
+    }
+
     func clearHistory() {
         history.removeAll()
         saveHistory()
+    }
+
+    /// True when nothing would be lost by quitting right now.
+    var isIdle: Bool {
+        state == .idle && activeFinalizationTasks.isEmpty && clipboardRestoreWorkItem == nil
     }
 
     var currentDisplayText: String {
@@ -1247,10 +1322,17 @@ final class DictationController: NSObject, ObservableObject {
             NSEvent.removeMonitor(localFlagsMonitor)
             self.localFlagsMonitor = nil
         }
-        for obs in deviceObservers {
-            NotificationCenter.default.removeObserver(obs)
+        if let deviceListener {
+            for selector in Self.deviceSelectors {
+                var address = MicCapture.systemAddress(selector)
+                AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address, .main, deviceListener)
+            }
+            self.deviceListener = nil
         }
-        deviceObservers.removeAll()
+        if let accessibilityObserver {
+            DistributedNotificationCenter.default().removeObserver(accessibilityObserver)
+            self.accessibilityObserver = nil
+        }
 
         warmUpTask?.cancel()
         activeStartupTask?.cancel()
@@ -1267,31 +1349,10 @@ final class DictationController: NSObject, ObservableObject {
             Task { await analyzer.cancelAndFinishNow() }
         }
 
+        pipeline.endStreaming()
+        pipeline.clearPreRoll()
         captureQueue.sync {
-            audioOutput.setSampleBufferDelegate(nil, queue: nil)
-            pipeline.endStreaming()
-            pipeline.clearPreRoll()
-            if captureSession.isRunning {
-                captureSession.stopRunning()
-            }
-        }
-    }
-}
-
-// MARK: - AVCaptureAudioDataOutputSampleBufferDelegate
-
-extension DictationController: AVCaptureAudioDataOutputSampleBufferDelegate {
-    nonisolated func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
-        guard let scaledLevel = pipeline.processSampleBuffer(sampleBuffer) else { return }
-
-        Task { @MainActor [weak self] in
-            guard let self, self.state == .recording else { return }
-            var next = self.audioLevels
-            if !next.isEmpty {
-                next.removeFirst()
-                next.append(scaledLevel)
-                self.audioLevels = next
-            }
+            mic.stop()
         }
     }
 }
@@ -1320,80 +1381,262 @@ final class FloatingHUDPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-// MARK: - Minimal Floating HUD View
+// MARK: - Floating HUD View
 
-struct ImmersiveHUDView: View {
-    @ObservedObject var controller: DictationController
-    @AppStorage("appearanceBackground") private var backgroundHex = "0E1118"
-    @AppStorage("appearanceSurface") private var surfaceHex = "171B24"
-    @AppStorage("appearanceAccent") private var accentHex = "E04755"
-    @AppStorage("appearanceLogo") private var logoHex = "E04755"
-    @AppStorage("appearanceOutline") private var outlineHex = "383E4E"
-    @AppStorage("appearanceLogoShape") private var logoShape = "waveform"
-    @AppStorage("appearanceBoxShape") private var boxShape = "rounded"
-    @AppStorage("appearanceBorderWidth") private var borderWidth = 1.0
-    @AppStorage("appearancePattern") private var pattern = "grid"
+/// Plain AppKit, so a dictation never has to load SwiftUI. Reads the settings the main window edits.
+struct HUDTheme {
+    let background: NSColor
+    let accent: NSColor
+    let logo: NSColor
+    let outline: NSColor
+    let logoShape: String
+    let pattern: String
+    let cornerRadius: CGFloat
+    let borderWidth: CGFloat
 
-    private var background: Color { AuraStyle.color(backgroundHex, fallback: 0x0E1118) }
-    private var surface: Color { AuraStyle.color(surfaceHex, fallback: 0x171B24) }
-    private var accent: Color { AuraStyle.color(accentHex, fallback: 0xE04755) }
-    private var logoColor: Color { AuraStyle.color(logoHex, fallback: 0xE04755) }
-    private var outline: Color { AuraStyle.color(outlineHex, fallback: 0x383E4E) }
-    private var cornerRadius: CGFloat { boxShape == "square" ? 3 : boxShape == "pill" ? 26 : 10 }
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(background)
-                .overlay(
-                    ChassisPatternOverlay(pattern: pattern, tint: outline)
-                        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .strokeBorder(
-                            controller.state == .recording ? accent : outline,
-                            lineWidth: max(1.0, borderWidth)
-                        )
-                )
-
-            HStack(spacing: 12) {
-                HStack(spacing: 8) {
-                    AuraMark(shape: logoShape, color: logoColor, size: 22)
-                    Text(controller.state == .recording ? "REC" : "SYNC")
-                        .font(AuraStyle.displayFont(size: 10))
-                        .tracking(0.8)
-                        .foregroundStyle(controller.state == .recording ? accent : AuraStyle.grayscale70)
-                }
-
-                Rectangle()
-                    .fill(outline.opacity(0.65))
-                    .frame(width: 1, height: 24)
-
-                Text(controller.currentDisplayText.isEmpty ? "Listening..." : controller.currentDisplayText)
-                    .font(AuraStyle.bodyMedium(size: 14.5))
-                    .foregroundStyle(controller.currentDisplayText.isEmpty ? AuraStyle.grayscale60 : AuraStyle.grayscale100)
-                    .lineLimit(1)
-                    .truncationMode(.head)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                Rectangle()
-                    .fill(outline.opacity(0.65))
-                    .frame(width: 1, height: 24)
-
-                HStack(alignment: .center, spacing: 3) {
-                    ForEach(Array(controller.audioLevels.suffix(12).enumerated()), id: \.offset) { _, level in
-                        RoundedRectangle(cornerRadius: 1.2, style: .continuous)
-                            .fill(AuraStyle.meterGradient(accent: accent))
-                            .frame(width: 3, height: max(4, level * 26))
-                            .animation(.linear(duration: 0.08), value: level)
-                    }
-                }
-                .frame(height: 28)
-            }
-            .padding(.horizontal, 16)
+    init() {
+        let defaults = UserDefaults.standard
+        func color(_ key: String, _ fallback: UInt32) -> NSColor {
+            AuraStyle.nsColor(defaults.string(forKey: key) ?? "", fallback: fallback)
         }
-        .frame(width: 440, height: 52)
+        background = color("appearanceBackground", 0x0E1118)
+        accent = color("appearanceAccent", 0xE04755)
+        logo = color("appearanceLogo", 0xE04755)
+        outline = color("appearanceOutline", 0x383E4E)
+        logoShape = defaults.string(forKey: "appearanceLogoShape") ?? "waveform"
+        pattern = defaults.string(forKey: "appearancePattern") ?? "grid"
+        let boxShape = defaults.string(forKey: "appearanceBoxShape") ?? "rounded"
+        cornerRadius = boxShape == "square" ? 3 : boxShape == "pill" ? 26 : 10
+        borderWidth = defaults.object(forKey: "appearanceBorderWidth") == nil ? 1 : defaults.double(forKey: "appearanceBorderWidth")
+    }
+}
+
+/// The static background, kept apart so the pattern isn't redrawn with every meter update.
+final class HUDBackdropView: NSView {
+    var theme = HUDTheme() {
+        didSet { needsDisplay = true }
+    }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        theme.background.setFill()
+        bounds.fill()
+
+        let path = NSBezierPath()
+        switch theme.pattern {
+        case "mesh":
+            theme.outline.withAlphaComponent(0.14).setFill()
+            for x in stride(from: 4, to: bounds.width, by: 8) {
+                for y in stride(from: 4, to: bounds.height, by: 8) {
+                    path.appendOval(in: NSRect(x: x, y: y, width: 1.2, height: 1.2))
+                }
+            }
+            path.fill()
+        case "grid":
+            theme.outline.withAlphaComponent(0.10).setStroke()
+            path.lineWidth = 0.6
+            appendLines(to: path, step: 20, vertical: true)
+            path.stroke()
+        case "scanline":
+            theme.outline.withAlphaComponent(0.12).setStroke()
+            path.lineWidth = 0.8
+            appendLines(to: path, step: 4, vertical: false)
+            path.stroke()
+        default:
+            break
+        }
+    }
+
+    private func appendLines(to path: NSBezierPath, step: CGFloat, vertical: Bool) {
+        if vertical {
+            for x in stride(from: 0, through: bounds.width, by: step) {
+                path.move(to: NSPoint(x: x, y: 0))
+                path.line(to: NSPoint(x: x, y: bounds.height))
+            }
+        }
+        for y in stride(from: 0, through: bounds.height, by: step) {
+            path.move(to: NSPoint(x: 0, y: y))
+            path.line(to: NSPoint(x: bounds.width, y: y))
+        }
+    }
+}
+
+final class HUDContentView: NSView {
+    private static let padding: CGFloat = 16
+    private static let spacing: CGFloat = 12
+    private static let markSize: CGFloat = 22
+    private static let barCount = 12
+    private static let barWidth: CGFloat = 3
+    private static let barSpacing: CGFloat = 3
+    private static let muted = NSColor(srgbRed: 0.65, green: 0.69, blue: 0.75, alpha: 1)
+    private static let dimmed = NSColor(srgbRed: 0.72, green: 0.76, blue: 0.82, alpha: 1)
+    private static let gold = NSColor(srgbRed: 0xF2 / 255.0, green: 0xD8 / 255.0, blue: 0xA6 / 255.0, alpha: 1)
+
+    private let controller: DictationController
+    private let labelFont = AuraStyle.bundledFont("BasementGrotesque-Black_v1.202", size: 10) ?? .systemFont(ofSize: 10, weight: .black)
+    private let textFont = AuraStyle.bundledFont("RedHatText-Medium", size: 14.5) ?? .systemFont(ofSize: 14.5, weight: .medium)
+    private var meterGradient: NSGradient?
+
+    var theme = HUDTheme() {
+        didSet {
+            meterGradient = NSGradient(
+                colors: [theme.accent.withAlphaComponent(0.75), theme.accent, Self.gold],
+                atLocations: [0, 0.62, 1],
+                colorSpace: .sRGB
+            )
+            needsDisplay = true
+        }
+    }
+
+    init(frame: NSRect, controller: DictationController) {
+        self.controller = controller
+        super.init(frame: frame)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("HUDContentView is built in code")
+    }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let isRecording = controller.state == .recording
+        var x = Self.padding
+
+        drawMark(at: NSPoint(x: x, y: (bounds.height - Self.markSize) / 2))
+        x += Self.markSize + 8
+
+        let label = line(isRecording ? "REC" : "SYNC", font: labelFont, color: isRecording ? theme.accent : Self.dimmed, kern: 0.8)
+        draw(label, x: x, font: labelFont)
+        x += ceil(CTLineGetTypographicBounds(label, nil, nil, nil)) + Self.spacing
+
+        drawDivider(at: x)
+        x += 1 + Self.spacing
+
+        let meterWidth = CGFloat(Self.barCount) * Self.barWidth + CGFloat(Self.barCount - 1) * Self.barSpacing
+        let meterX = bounds.width - Self.padding - meterWidth
+        let dividerX = meterX - Self.spacing - 1
+        drawDivider(at: dividerX)
+
+        // Only the end of the text can fit, so long dictations stay cheap to redraw.
+        let liveText = String(controller.currentDisplayText.suffix(160))
+        let text = line(liveText.isEmpty ? "Listening..." : liveText, font: textFont, color: liveText.isEmpty ? Self.muted : .white)
+        let ellipsis = line("…", font: textFont, color: .white)
+        let textWidth = dividerX - Self.spacing - x
+        draw(CTLineCreateTruncatedLine(text, textWidth, .start, ellipsis) ?? text, x: x, font: textFont)
+
+        var barX = meterX
+        for level in controller.audioLevels.suffix(Self.barCount) {
+            let height = max(4, level * 26)
+            let bar = NSRect(x: barX, y: (bounds.height - height) / 2, width: Self.barWidth, height: height)
+            meterGradient?.draw(in: NSBezierPath(roundedRect: bar, xRadius: 1.2, yRadius: 1.2), angle: -90)
+            barX += Self.barWidth + Self.barSpacing
+        }
+    }
+
+    private func line(_ string: String, font: NSFont, color: NSColor, kern: CGFloat = 0) -> CTLine {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .kern: kern,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): color.cgColor
+        ]
+        return CTLineCreateWithAttributedString(NSAttributedString(string: string, attributes: attributes))
+    }
+
+    /// CoreText skips the full text system, which would otherwise add several MB to this process.
+    private func draw(_ line: CTLine, x: CGFloat, font: NSFont) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.saveGState()
+        context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+        context.textPosition = CGPoint(x: x, y: (bounds.height + font.ascender + font.descender) / 2)
+        CTLineDraw(line, context)
+        context.restoreGState()
+    }
+
+    private func drawDivider(at x: CGFloat) {
+        theme.outline.withAlphaComponent(0.65).setFill()
+        NSRect(x: x, y: (bounds.height - 24) / 2, width: 1, height: 24).fill()
+    }
+
+    private func drawMark(at origin: NSPoint) {
+        guard theme.logoShape == "waveform" else {
+            let name = theme.logoShape == "circle" ? "waveform.circle.fill" : "mic.circle.fill"
+            let configuration = NSImage.SymbolConfiguration(pointSize: Self.markSize * 0.82, weight: .semibold)
+                .applying(NSImage.SymbolConfiguration(paletteColors: [theme.logo]))
+            if let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?.withSymbolConfiguration(configuration) {
+                let rect = NSRect(
+                    x: origin.x + (Self.markSize - image.size.width) / 2,
+                    y: origin.y + (Self.markSize - image.size.height) / 2,
+                    width: image.size.width,
+                    height: image.size.height
+                )
+                image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+            }
+            return
+        }
+
+        let unit = Self.markSize / 100
+        func point(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
+            NSPoint(x: origin.x + x * unit, y: origin.y + y * unit)
+        }
+        theme.logo.set()
+        let arc = NSBezierPath()
+        arc.lineWidth = 8 * unit
+        arc.lineCapStyle = .round
+        arc.move(to: point(12, 55))
+        arc.curve(to: point(88, 55), controlPoint1: point(12, 4), controlPoint2: point(88, 4))
+        arc.stroke()
+
+        for (index, height) in [18.0, 30.0, 45.0, 30.0, 18.0].enumerated() {
+            let center = point(22 + CGFloat(index) * 14, 72 - height / 2)
+            let bar = NSRect(x: center.x - 4 * unit, y: center.y - height * unit / 2, width: 8 * unit, height: height * unit)
+            NSBezierPath(roundedRect: bar, xRadius: 4 * unit, yRadius: 4 * unit).fill()
+        }
+    }
+}
+
+final class HUDView: NSView {
+    private let backdrop: HUDBackdropView
+    private let content: HUDContentView
+    private var theme = HUDTheme()
+    private var isRecording = false
+
+    init(frame: NSRect, controller: DictationController) {
+        backdrop = HUDBackdropView(frame: NSRect(origin: .zero, size: frame.size))
+        content = HUDContentView(frame: NSRect(origin: .zero, size: frame.size), controller: controller)
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.masksToBounds = true
+        layer?.cornerCurve = .continuous
+        addSubview(backdrop)
+        addSubview(content)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("HUDView is built in code")
+    }
+
+    func reloadTheme() {
+        theme = HUDTheme()
+        backdrop.theme = theme
+        content.theme = theme
+        layer?.cornerRadius = theme.cornerRadius
+        layer?.borderWidth = max(1, theme.borderWidth)
+        updateBorder()
+    }
+
+    func setRecording(_ recording: Bool) {
+        isRecording = recording
+        updateBorder()
+    }
+
+    func refresh() {
+        content.needsDisplay = true
+    }
+
+    private func updateBorder() {
+        layer?.borderColor = (isRecording ? theme.accent : theme.outline).cgColor
     }
 }
 
@@ -1962,13 +2205,13 @@ struct OnboardingView: View {
                         .font(AuraStyle.displayFont(size: 22))
                     Text("Hold a shortcut anywhere on macOS, speak naturally, and release to inject text directly into your active cursor.")
                         .font(AuraStyle.bodyRegular(size: 15))
-                    Text("100% on-device via Apple SpeechTranscriber. Zero network bandwidth, ~30 MB RAM, and customizable industrial themes.")
+                    Text("Speech is transcribed on your Mac with Apple's speech engine, and you can restyle the app to suit you.")
                         .font(AuraStyle.bodyRegular(size: 14))
                         .foregroundStyle(AuraStyle.grayscale70)
                 case 1:
                     Text("MICROPHONE ACCESS")
                         .font(AuraStyle.displayFont(size: 22))
-                    Text("Aura needs microphone access to capture 16kHz PCM audio and maintain its 380ms pre-roll ring buffer so your first syllable is never clipped.")
+                    Text("Aura needs microphone access to capture 16kHz PCM audio and maintain its 380ms pre-roll ring buffer so your first word doesn't get cut off.")
                         .font(AuraStyle.bodyRegular(size: 15))
                     permissionStatus(controller.microphoneGranted)
                     Button(controller.microphoneGranted ? "MICROPHONE ENABLED" : "ALLOW MICROPHONE") {
@@ -2052,42 +2295,46 @@ struct OnboardingView: View {
 // MARK: - Application Delegate & Window Management
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var controller: DictationController!
-    var hudPanel: FloatingHUDPanel!
-    var studioWindow: NSWindow!
+    var hudPanel: FloatingHUDPanel?
+    var hudView: HUDView?
+    var studioWindow: NSWindow?
     var statusItem: NSStatusItem!
+    private var hudSubscriptions: Set<AnyCancellable> = []
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        AuraStyle.registerBundledFonts()
         controller = DictationController()
-
-        setupFloatingHUD()
-        setupStudioWindow()
         setupMenuBarItem()
 
         controller.onHUDVisibilityChange = { [weak self] visible in
             guard let self else { return }
             if visible {
+                let panel = self.preparedHUDPanel()
                 self.positionHUDAtBottomCenter()
-                self.hudPanel.alphaValue = 0
-                self.hudPanel.orderFrontRegardless()
+                panel.alphaValue = 0
+                panel.orderFrontRegardless()
                 NSAnimationContext.runAnimationGroup { ctx in
                     ctx.duration = 0.14
-                    self.hudPanel.animator().alphaValue = 1.0
+                    panel.animator().alphaValue = 1.0
                 }
-            } else {
+            } else if let panel = self.hudPanel {
                 NSAnimationContext.runAnimationGroup({ ctx in
                     ctx.duration = 0.16
-                    self.hudPanel.animator().alphaValue = 0.0
+                    panel.animator().alphaValue = 0.0
                 }, completionHandler: {
                     Task { @MainActor in
                         if self.controller.state == .idle {
-                            self.hudPanel.orderOut(nil)
+                            panel.orderOut(nil)
                         }
                     }
                 })
             }
+        }
+
+        // Only pop open automatically if setup isn't finished; otherwise stay quietly in the menu bar
+        if controller.showOnboarding || !controller.microphoneGranted || !controller.accessibilityGranted {
+            showStudioWindow()
         }
     }
 
@@ -2095,11 +2342,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller?.shutdown()
     }
 
-    private func setupFloatingHUD() {
-        let rect = NSRect(x: 0, y: 0, width: 440, height: 52)
-        hudPanel = FloatingHUDPanel(contentRect: rect)
-        hudPanel.contentView = NSHostingView(rootView: ImmersiveHUDView(controller: controller))
-        positionHUDAtBottomCenter()
+    private func preparedHUDPanel() -> FloatingHUDPanel {
+        if hudPanel == nil {
+            let rect = NSRect(x: 0, y: 0, width: 440, height: 52)
+            let panel = FloatingHUDPanel(contentRect: rect)
+            let view = HUDView(frame: rect, controller: controller)
+            panel.contentView = view
+            hudPanel = panel
+            hudView = view
+            controller.objectWillChange
+                .sink { [weak view] in view?.refresh() }
+                .store(in: &hudSubscriptions)
+            controller.$state
+                .sink { [weak view] state in view?.setRecording(state == .recording) }
+                .store(in: &hudSubscriptions)
+        }
+        hudView?.reloadTheme()
+        hudView?.setRecording(controller.state == .recording)
+        return hudPanel!
     }
 
     private func positionHUDAtBottomCenter() {
@@ -2107,29 +2367,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let visibleFrame = screen?.visibleFrame else { return }
         let x = visibleFrame.midX - 220
         let y = visibleFrame.minY + 36
-        hudPanel.setFrameOrigin(NSPoint(x: x, y: y))
+        hudPanel?.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
-    private func setupStudioWindow() {
+    private func makeStudioWindow() -> NSWindow {
+        AuraStyle.registerBundledFonts()
         let rect = NSRect(x: 0, y: 0, width: 600, height: 500)
-        studioWindow = NSWindow(
+        let window = NSWindow(
             contentRect: rect,
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
-            defer: false
+            defer: true
         )
-        studioWindow.title = "AuraDictate"
-        studioWindow.titlebarAppearsTransparent = true
-        studioWindow.titleVisibility = .hidden
-        studioWindow.isMovableByWindowBackground = true
-        studioWindow.backgroundColor = NSColor(red: 0.055, green: 0.068, blue: 0.095, alpha: 1)
-        studioWindow.contentView = NSHostingView(rootView: StudioMainView(controller: controller))
-        studioWindow.center()
-        studioWindow.isReleasedWhenClosed = false
-        // Only pop open automatically on first launch if permissions are missing; otherwise stay quietly in the menu bar
-        if controller.showOnboarding || !controller.microphoneGranted || !controller.accessibilityGranted {
-            studioWindow.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+        window.title = "AuraDictate"
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = NSColor(red: 0.055, green: 0.068, blue: 0.095, alpha: 1)
+        window.contentView = NSHostingView(rootView: StudioMainView(controller: controller))
+        window.center()
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        return window
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard notification.object as? NSWindow === studioWindow else { return }
+        controller.showAppearance = false
+        DispatchQueue.main.async { [weak self] in
+            self?.studioWindow?.contentView = nil
+            self?.studioWindow = nil
+            self?.relaunchToReleaseMemory()
+        }
+    }
+
+    /// SwiftUI keeps about 20 MB after its last window closes, and only a new process gets
+    /// that back. Skipped during setup, when the new process would reopen the window.
+    private func relaunchToReleaseMemory() {
+        guard studioWindow == nil, !controller.showOnboarding,
+              controller.microphoneGranted, controller.accessibilityGranted else { return }
+        guard controller.isIdle else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.relaunchToReleaseMemory()
+            }
+            return
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        configuration.activates = false
+        NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: configuration) { _, error in
+            guard error == nil else { return }
+            DispatchQueue.main.async { NSApp.terminate(nil) }
         }
     }
 
@@ -2163,7 +2451,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func showStudioWindow() {
-        studioWindow.makeKeyAndOrderFront(nil)
+        let window = studioWindow ?? makeStudioWindow()
+        studioWindow = window
+        controller.refreshPermissionsAndConfigureIfNeeded()
+        window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 

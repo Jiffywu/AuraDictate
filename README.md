@@ -1,68 +1,97 @@
 # Aura Dictate
 
-Aura Dictate is a macOS menu bar app for push-to-talk dictation. It uses Apple's `SpeechAnalyzer` and `SpeechTranscriber` to transcribe speech on device with an original voice-wave mark, a 380ms pre-roll ring buffer, and a live customizable industrial chassis.
+**The smallest, fastest-feeling dictation app on Mac.**
+
+Hold a key, talk, and let go. Your words appear wherever you're typing. Aura lives in the menu bar and transcribes on your Mac with Apple's built-in speech engine.
 
 <p align="center">
   <a href="https://github.com/Jiffywu/AuraDictate/releases/download/v1.1.0/auradictate-promo.mp4">
     <img src="docs/auradictate-demo.gif" alt="Aura Dictate — On-Device Push-to-Talk Dictation for macOS" width="100%" />
   </a>
   <br />
-  <sub><a href="https://github.com/Jiffywu/AuraDictate/releases/download/v1.1.0/auradictate-promo.mp4">▶ Watch full 1080p60 video with sound (MP4)</a> · <a href="https://github.com/Jiffywu/AuraDictate/releases/latest/download/AuraDictate.dmg">⬇ Download AuraDictate.dmg (1.1 MB)</a></sub>
+  <sub><a href="https://github.com/Jiffywu/AuraDictate/releases/download/v1.1.0/auradictate-promo.mp4">▶ Watch full 1080p60 video with sound (MP4)</a> · <a href="https://github.com/Jiffywu/AuraDictate/releases/latest/download/AuraDictate.dmg">⬇ Download AuraDictate.dmg (531 KB)</a></sub>
 </p>
 
-## Principles
+## Why it feels fast
 
-- Keep dictation close at hand with a menu bar app and a push-to-talk shortcut.
-- Use Apple's on-device speech tools and keep the audio pre-roll in memory.
-- Give people control over the app's appearance, shortcuts, and clipboard behavior.
-- Keep the source small enough to read and modify.
+Aura transcribes while you talk, so there's very little left to do when you let go of the key. In a repeatable test on an M5 Max MacBook Pro, text was ready to paste a median of 191 ms after release for a 4-second clip and 136 ms for a 27-second clip.
+
+It also keeps the last 380 ms of audio in memory, so your first word doesn't get cut off.
+
+- **Download:** 531 KB
+- **Installed:** 760 KB
+- **Memory:** about 14 MB when idle and 17 MB after dictating, plus Apple's speech service while you dictate
+- **CPU:** under 1% of one core when idle
+
+The Settings window uses about 44 MB while it's open. Aura restarts itself when you close the window to give that memory back.
+
+## How it compares
+
+| | Aura Dictate | [Wispr Flow](https://wisprflow.ai) | [Superwhisper](https://superwhisper.com) | [MacWhisper](https://macwhisper.com) |
+|---|---|---|---|---|
+| **Price** | Free | Limited free plan, Pro $15/month | Limited free plan, Pro $8.49/month or $249.99 once | Free version, Pro about €59–65 once |
+| **Open source** | Yes (MIT) | No | No | No |
+| **Where speech is processed** | On your Mac | Cloud | On your Mac or cloud | On your Mac |
+| **Speech engine** | Apple | Cloud models | Whisper, Parakeet, cloud models | Whisper, Parakeet |
+| **Built mainly for** | Dictation | Dictation | Dictation | Transcribing audio files |
+| **Languages** | English (US) | Many | Many | Many |
+| **Runs on** | Mac | Mac, Windows, iPhone, Android | Mac, Windows, iPhone | Mac |
+
+Prices were checked in November 2026 and can change.
+
+Aura does one job. Pick Wispr Flow or Superwhisper if you want AI to rewrite your text, or if you need other languages or devices. Pick MacWhisper if you mostly transcribe recordings. Whisper and Parakeet models may also be more accurate on difficult audio.
 
 ## Requirements
 
-- An Apple silicon Mac running macOS 26 or later.
-- Xcode or Command Line Tools with the macOS 26 SDK or newer.
-- Microphone access. Accessibility access is required for the global shortcut and automatic paste.
-- The English (United States) speech model. macOS may download speech assets when the app starts.
+- Apple silicon Mac with macOS 26 or later
+- Microphone access
+- Accessibility access, for the global shortcut and auto-paste
 
-The app currently uses `en_US` and does not offer a language picker.
+macOS may download its English speech model the first time Aura starts.
 
 ## Install
 
-### Option 1: Download `.dmg` (Recommended for most users)
-1. Download **[`AuraDictate.dmg`](https://github.com/Jiffywu/AuraDictate/releases/latest/download/AuraDictate.dmg)** from the [latest GitHub Release](https://github.com/Jiffywu/AuraDictate/releases/latest).
-2. Open `AuraDictate.dmg` and drag **AuraDictate** into **Applications**.
+**Download:** Open [`AuraDictate.dmg`](https://github.com/Jiffywu/AuraDictate/releases/latest/download/AuraDictate.dmg) and drag Aura Dictate into Applications.
 
-### Option 2: One-Line Terminal Installer
-Installs the pre-built release directly into `/Applications/AuraDictate.app`, clears quarantine attributes, and launches it in your menu bar:
+**Terminal:**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Jiffywu/AuraDictate/main/install.sh | bash
 ```
 
-### Option 3: Build from Source
+**From source** (needs Xcode or Command Line Tools with the macOS 26 SDK or newer):
+
 ```sh
 ./build.sh /Applications/AuraDictate.app
 open /Applications/AuraDictate.app
 ```
 
-The default `./build.sh` is ad hoc signed and outputs to `build/AuraDictate.app` unless a destination path is passed. A Developer ID signature can be supplied with `SIGN_IDENTITY`, and `./scripts/package-release.sh` builds both `dist/AuraDictate.dmg` and `dist/AuraDictate-macos-arm64.zip`.
+`build.sh` signs the app ad hoc. Set `SIGN_IDENTITY` to use a Developer ID. `scripts/package-release.sh` builds the DMG and ZIP.
 
 ## Use
 
-On first launch, the setup guide walks you through microphone and Accessibility access. You can open it again with **Setup Guide** in the menu bar. If macOS does not show a permission prompt, open Privacy & Security in System Settings and enable Aura Dictate under Microphone and Accessibility. On macOS versions that show Device Control and Data Access, use that page for Accessibility access. If Aura still reports that access is off, remove its old entry and add the app from Applications again.
+1. Follow the setup guide on first launch. You can reopen it with **Setup Guide** in the menu bar.
+2. Hold Right Command and talk. Fn and Right Option also work.
+3. Let go. Aura pastes the text into the active app, then restores your clipboard.
 
-Open **Settings & History** from the menu bar icon. Hold the configured shortcut to dictate, then release it to finish. The default shortcut is Right Command. Fn and Right Option are also available. You can start and stop recording in the main window.
+Open **Settings & History** from the menu bar to change shortcuts, colors, and shapes, or to see past dictations.
 
-Use **Appearance** in the main window to change the background, panel, accent, logo color, outline color, logo shape, box shape, and outline width. These preferences also apply to the floating transcription display. Choose **Reset appearance** to restore the defaults.
-
-Pre-roll is enabled by default. When microphone access is granted, this keeps audio capture running so the app can retain a short in-memory buffer before the shortcut is pressed. Turn off Pre-roll in the main window to stop capture while idle. Auto-paste uses the clipboard and attempts to restore its previous contents after pasting.
+**If access still shows as off:** Open Privacy & Security in System Settings, remove Aura Dictate from the list, and add it again from Applications.
 
 ## Privacy
 
-The app stores up to 50 transcripts in local user defaults until you clear history. They are not encrypted by the app. Audio pre-roll is kept in memory. The app does not implement a network upload for audio or transcripts, but macOS may download speech assets. Review Apple's speech feature behavior for your macOS version and configuration before relying on this description for a privacy policy.
+- Aura has no code that uploads your audio or text.
+- Pre-roll keeps your microphone open while Aura is idle, so it can save the last moments of audio. That audio stays in memory. Turn off **Pre-roll** to close the microphone between dictations.
+- Your last 50 transcripts are saved unencrypted in the app's local preferences until you clear them.
+- macOS may download speech assets. Apple's speech settings on your Mac may also apply.
 
-## Source and license
+## Source
 
-`AuraDictate.swift` contains the app, capture pipeline, and UI. `AuraMark.svg` is the editable logo and `scripts/generate-icon.swift` generates the app icon. To regenerate it, run `swift scripts/generate-icon.swift /tmp/AuraIcon.iconset` followed by `iconutil -c icns /tmp/AuraIcon.iconset -o AppIcon.icns`.
+The whole app is in `AuraDictate.swift`. The logo is `AuraMark.svg`, and `scripts/generate-icon.swift` generates the icon:
 
-The source is offered under the MIT license in `LICENSE`. Verify that you have the rights to release the original source and any contributions before publishing.
+```sh
+swift scripts/generate-icon.swift /tmp/AuraIcon.iconset
+iconutil -c icns /tmp/AuraIcon.iconset -o AppIcon.icns
+```
+
+Aura Dictate is released under the [MIT license](LICENSE).
