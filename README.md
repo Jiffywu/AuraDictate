@@ -20,7 +20,7 @@ It also keeps the last 380 ms of audio in memory, so your first word doesn't get
 
 - **Download:** 534 KB
 - **Installed:** 762 KB
-- **Memory:** about 14 MB when idle and 17 MB after dictating, plus Apple's speech service while you dictate
+- **Memory:** 14–16 MB when idle and 17–20 MB after dictating, depending on the Mac, plus Apple's speech service while you dictate
 - **CPU:** under 1% of one core when idle
 
 The Settings window uses about 44 MB while it's open. Aura restarts itself when you close the window to give that memory back.
