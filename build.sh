@@ -23,12 +23,21 @@ trap cleanup EXIT
 
 echo "==> Staging clean AuraDictate.app bundle"
 mkdir -p "$STAGE_APP/Contents/MacOS"
-mkdir -p "$STAGE_APP/Contents/Resources"
+mkdir -p "$STAGE_APP/Contents/Resources/Fonts"
 
 cp "$SCRIPT_DIR/Info.plist" "$STAGE_APP/Contents/Info.plist"
 if [[ -f "$SCRIPT_DIR/AppIcon.icns" ]]; then
     cp "$SCRIPT_DIR/AppIcon.icns" "$STAGE_APP/Contents/Resources/AppIcon.icns"
     plutil -replace CFBundleIconFile -string "AppIcon" "$STAGE_APP/Contents/Info.plist"
+fi
+
+if [[ -d "$SCRIPT_DIR/Fonts" ]]; then
+    shopt -s nullglob
+    FONT_FILES=("$SCRIPT_DIR/Fonts/"*.otf "$SCRIPT_DIR/Fonts/"*.ttf)
+    shopt -u nullglob
+    if (( ${#FONT_FILES[@]} > 0 )); then
+        cp "${FONT_FILES[@]}" "$STAGE_APP/Contents/Resources/Fonts/"
+    fi
 fi
 
 plutil -lint "$STAGE_APP/Contents/Info.plist" >/dev/null

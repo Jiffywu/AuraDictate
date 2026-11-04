@@ -3,9 +3,23 @@ import SwiftUI
 import AVFoundation
 import CoreMedia
 import Speech
+import CoreText
 import Carbon.HIToolbox
 
-// MARK: - Appearance
+// MARK: - Appearance & Industrial Typography
+
+struct AuraPreset: Identifiable {
+    let id: String
+    let name: String
+    let subtitle: String
+    let backgroundHex: String
+    let surfaceHex: String
+    let accentHex: String
+    let logoHex: String
+    let outlineHex: String
+    let boxShape: String
+    let pattern: String
+}
 
 enum AuraStyle {
     static let surface = Color(red: 0.25, green: 0.28, blue: 0.34)
@@ -13,11 +27,81 @@ enum AuraStyle {
     static let grayscale70 = Color(red: 0.72, green: 0.76, blue: 0.82)
     static let grayscale90 = Color(red: 0.88, green: 0.90, blue: 0.94)
     static let grayscale100 = Color.white
-    static let error = Color(red: 1.0, green: 0.40, blue: 0.42)
+    static let error = Color(red: 0.94, green: 0.27, blue: 0.29)
     static let warning = Color(red: 0.90, green: 0.66, blue: 0.27)
+    static let success = Color(red: 0.19, green: 0.82, blue: 0.35)
+
+    static let gold400 = Color(red: 0xf2 / 255.0, green: 0xd8 / 255.0, blue: 0xa6 / 255.0)
+    static let gold500 = Color(red: 0xff / 255.0, green: 0xda / 255.0, blue: 0x85 / 255.0)
+    static let gold600 = Color(red: 0xae / 255.0, green: 0x87 / 255.0, blue: 0x33 / 255.0)
+
+    static let presets: [AuraPreset] = [
+        AuraPreset(
+            id: "crimson",
+            name: "CRIMSON DECK",
+            subtitle: "OBSIDIAN // CRIMSON",
+            backgroundHex: "0E1118",
+            surfaceHex: "171B24",
+            accentHex: "E04755",
+            logoHex: "E04755",
+            outlineHex: "383E4E",
+            boxShape: "rounded",
+            pattern: "grid"
+        ),
+        AuraPreset(
+            id: "studio",
+            name: "STUDIO 1000",
+            subtitle: "CHARCOAL // AMBER GOLD",
+            backgroundHex: "1C1B1C",
+            surfaceHex: "272626",
+            accentHex: "C24E00",
+            logoHex: "ED1C24",
+            outlineHex: "3F3F3F",
+            boxShape: "square",
+            pattern: "mesh"
+        ),
+        AuraPreset(
+            id: "phosphor",
+            name: "P31 SCOPE",
+            subtitle: "CRT BLACK // PHOSPHOR",
+            backgroundHex: "09110D",
+            surfaceHex: "101E17",
+            accentHex: "10B981",
+            logoHex: "34D399",
+            outlineHex: "1F3A2C",
+            boxShape: "square",
+            pattern: "scanline"
+        ),
+        AuraPreset(
+            id: "cobalt",
+            name: "FIELD UNIT",
+            subtitle: "SLATE // SIGNAL COBALT",
+            backgroundHex: "121519",
+            surfaceHex: "1C2128",
+            accentHex: "2F81F7",
+            logoHex: "FF6A1A",
+            outlineHex: "343C47",
+            boxShape: "rounded",
+            pattern: "mesh"
+        )
+    ]
+
+    private static var fontsRegistered = false
+
+    static func registerBundledFonts() {
+        guard !fontsRegistered else { return }
+        fontsRegistered = true
+        guard let fontsDir = Bundle.main.resourceURL?.appendingPathComponent("Fonts") else { return }
+        if let files = try? FileManager.default.contentsOfDirectory(at: fontsDir, includingPropertiesForKeys: nil) {
+            for url in files where url.pathExtension.lowercased() == "otf" || url.pathExtension.lowercased() == "ttf" {
+                CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
+            }
+        }
+    }
 
     static func color(_ hex: String, fallback: UInt32) -> Color {
-        let value = UInt32(hex, radix: 16) ?? fallback
+        let cleaned = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        let value = UInt32(cleaned, radix: 16) ?? fallback
         return Color(red: Double((value >> 16) & 255) / 255,
                      green: Double((value >> 8) & 255) / 255,
                      blue: Double(value & 255) / 255)
@@ -29,15 +113,97 @@ enum AuraStyle {
                       Int((rgb.greenComponent * 255).rounded()), Int((rgb.blueComponent * 255).rounded()))
     }
 
-    static func displayFont(size: CGFloat) -> Font { .system(size: size, weight: .bold, design: .rounded) }
-    static func bodyRegular(size: CGFloat = 17) -> Font { .system(size: size) }
-    static func bodyMedium(size: CGFloat = 15) -> Font { .system(size: size, weight: .medium) }
-    static func bodyBold(size: CGFloat = 12) -> Font { .system(size: size, weight: .semibold) }
+    static func meterGradient(accent: Color) -> LinearGradient {
+        LinearGradient(
+            stops: [
+                .init(color: accent.opacity(0.75), location: 0.0),
+                .init(color: accent, location: 0.62),
+                .init(color: gold400, location: 1.0)
+            ],
+            startPoint: .bottom,
+            endPoint: .top
+        )
+    }
+
+    static func displayFont(size: CGFloat) -> Font {
+        if NSFont(name: "BasementGrotesque-Black", size: size) != nil {
+            return .custom("BasementGrotesque-Black", size: size)
+        }
+        return .system(size: size, weight: .black)
+    }
+
+    static func bodyRegular(size: CGFloat = 17) -> Font {
+        if NSFont(name: "RedHatText-Regular", size: size) != nil {
+            return .custom("RedHatText-Regular", size: size)
+        }
+        return .system(size: size, weight: .regular)
+    }
+
+    static func bodyMedium(size: CGFloat = 15) -> Font {
+        if NSFont(name: "RedHatText-Medium", size: size) != nil {
+            return .custom("RedHatText-Medium", size: size)
+        }
+        return .system(size: size, weight: .medium)
+    }
+
+    static func bodyBold(size: CGFloat = 12) -> Font {
+        if NSFont(name: "RedHatText-Bold", size: size) != nil {
+            return .custom("RedHatText-Bold", size: size)
+        }
+        return .system(size: size, weight: size <= 12 ? .bold : .semibold)
+    }
+
+    static func mono(size: CGFloat = 11, weight: Font.Weight = .medium) -> Font {
+        .system(size: size, weight: weight, design: .monospaced)
+    }
+}
+
+struct ChassisPatternOverlay: View {
+    let pattern: String
+    let tint: Color
+
+    var body: some View {
+        Canvas { context, size in
+            guard pattern != "none" else { return }
+            if pattern == "mesh" {
+                let step: CGFloat = 8
+                for x in stride(from: 4, to: size.width, by: step) {
+                    for y in stride(from: 4, to: size.height, by: step) {
+                        let rect = CGRect(x: x, y: y, width: 1.2, height: 1.2)
+                        context.fill(Path(ellipseIn: rect), with: .color(tint.opacity(0.14)))
+                    }
+                }
+            } else if pattern == "grid" {
+                let step: CGFloat = 20
+                var path = Path()
+                for x in stride(from: 0, through: size.width, by: step) {
+                    path.move(to: CGPoint(x: x, y: 0))
+                    path.addLine(to: CGPoint(x: x, y: size.height))
+                }
+                for y in stride(from: 0, through: size.height, by: step) {
+                    path.move(to: CGPoint(x: 0, y: y))
+                    path.addLine(to: CGPoint(x: size.width, y: y))
+                }
+                context.stroke(path, with: .color(tint.opacity(0.10)), lineWidth: 0.6)
+            } else if pattern == "scanline" {
+                let step: CGFloat = 4
+                var path = Path()
+                for y in stride(from: 0, through: size.height, by: step) {
+                    path.move(to: CGPoint(x: 0, y: y))
+                    path.addLine(to: CGPoint(x: size.width, y: y))
+                }
+                context.stroke(path, with: .color(tint.opacity(0.12)), lineWidth: 0.8)
+            }
+        }
+        .allowsHitTesting(false)
+    }
 }
 
 struct AuraMark: View {
     let shape: String
     let color: Color
+    var size: CGFloat = 26
+
     var body: some View {
         Group {
             if shape == "waveform" {
@@ -61,11 +227,11 @@ struct AuraMark: View {
                 }
             } else {
                 Image(systemName: shape == "circle" ? "waveform.circle.fill" : "mic.circle.fill")
-                    .font(.system(size: 23, weight: .semibold))
+                    .font(.system(size: size * 0.82, weight: .semibold))
                     .foregroundStyle(color)
             }
         }
-        .frame(width: 28, height: 28)
+        .frame(width: size, height: size)
         .accessibilityLabel("Aura Dictate")
     }
 }
@@ -1162,51 +1328,70 @@ struct ImmersiveHUDView: View {
     @AppStorage("appearanceSurface") private var surfaceHex = "171B24"
     @AppStorage("appearanceAccent") private var accentHex = "E04755"
     @AppStorage("appearanceLogo") private var logoHex = "E04755"
-    @AppStorage("appearanceOutline") private var outlineHex = "75515B"
+    @AppStorage("appearanceOutline") private var outlineHex = "383E4E"
     @AppStorage("appearanceLogoShape") private var logoShape = "waveform"
     @AppStorage("appearanceBoxShape") private var boxShape = "rounded"
     @AppStorage("appearanceBorderWidth") private var borderWidth = 1.0
+    @AppStorage("appearancePattern") private var pattern = "grid"
+
     private var background: Color { AuraStyle.color(backgroundHex, fallback: 0x0E1118) }
     private var surface: Color { AuraStyle.color(surfaceHex, fallback: 0x171B24) }
     private var accent: Color { AuraStyle.color(accentHex, fallback: 0xE04755) }
     private var logoColor: Color { AuraStyle.color(logoHex, fallback: 0xE04755) }
-    private var outline: Color { AuraStyle.color(outlineHex, fallback: 0x75515B) }
-    private var cornerRadius: CGFloat { boxShape == "square" ? 2 : boxShape == "pill" ? 26 : 12 }
-
+    private var outline: Color { AuraStyle.color(outlineHex, fallback: 0x383E4E) }
+    private var cornerRadius: CGFloat { boxShape == "square" ? 3 : boxShape == "pill" ? 26 : 10 }
 
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(background)
                 .overlay(
+                    ChassisPatternOverlay(pattern: pattern, tint: outline)
+                        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                )
+                .overlay(
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .strokeBorder(
-                            outline,
-                            lineWidth: borderWidth
+                            controller.state == .recording ? accent : outline,
+                            lineWidth: max(1.0, borderWidth)
                         )
                 )
 
-            HStack(spacing: 14) {
-                AuraMark(shape: logoShape, color: logoColor)
+            HStack(spacing: 12) {
+                HStack(spacing: 8) {
+                    AuraMark(shape: logoShape, color: logoColor, size: 22)
+                    Text(controller.state == .recording ? "REC" : "SYNC")
+                        .font(AuraStyle.displayFont(size: 10))
+                        .tracking(0.8)
+                        .foregroundStyle(controller.state == .recording ? accent : AuraStyle.grayscale70)
+                }
+
+                Rectangle()
+                    .fill(outline.opacity(0.65))
+                    .frame(width: 1, height: 24)
 
                 Text(controller.currentDisplayText.isEmpty ? "Listening..." : controller.currentDisplayText)
-                    .font(AuraStyle.bodyMedium(size: 15))
+                    .font(AuraStyle.bodyMedium(size: 14.5))
                     .foregroundStyle(controller.currentDisplayText.isEmpty ? AuraStyle.grayscale60 : AuraStyle.grayscale100)
                     .lineLimit(1)
                     .truncationMode(.head)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
+                Rectangle()
+                    .fill(outline.opacity(0.65))
+                    .frame(width: 1, height: 24)
+
                 HStack(alignment: .center, spacing: 3) {
                     ForEach(Array(controller.audioLevels.suffix(12).enumerated()), id: \.offset) { _, level in
-                        RoundedRectangle(cornerRadius: 1.5, style: .continuous)
-                            .fill(accent)
+                        RoundedRectangle(cornerRadius: 1.2, style: .continuous)
+                            .fill(AuraStyle.meterGradient(accent: accent))
                             .frame(width: 3, height: max(4, level * 26))
                             .animation(.linear(duration: 0.08), value: level)
                     }
                 }
                 .frame(height: 28)
             }
-            .padding(.horizontal, 18)
+            .padding(.horizontal, 16)
         }
         .frame(width: 440, height: 52)
     }
@@ -1220,32 +1405,46 @@ struct StudioMainView: View {
     @AppStorage("appearanceSurface") private var surfaceHex = "171B24"
     @AppStorage("appearanceAccent") private var accentHex = "E04755"
     @AppStorage("appearanceLogo") private var logoHex = "E04755"
-    @AppStorage("appearanceOutline") private var outlineHex = "75515B"
+    @AppStorage("appearanceOutline") private var outlineHex = "383E4E"
     @AppStorage("appearanceLogoShape") private var logoShape = "waveform"
     @AppStorage("appearanceBoxShape") private var boxShape = "rounded"
     @AppStorage("appearanceBorderWidth") private var borderWidth = 1.0
+    @AppStorage("appearancePattern") private var pattern = "grid"
+
     private var background: Color { AuraStyle.color(backgroundHex, fallback: 0x0E1118) }
     private var surface: Color { AuraStyle.color(surfaceHex, fallback: 0x171B24) }
     private var accent: Color { AuraStyle.color(accentHex, fallback: 0xE04755) }
     private var logoColor: Color { AuraStyle.color(logoHex, fallback: 0xE04755) }
-    private var outline: Color { AuraStyle.color(outlineHex, fallback: 0x75515B) }
-    private var cornerRadius: CGFloat { boxShape == "square" ? 2 : boxShape == "pill" ? 26 : 12 }
+    private var outline: Color { AuraStyle.color(outlineHex, fallback: 0x383E4E) }
+    private var cornerRadius: CGFloat { boxShape == "square" ? 3 : boxShape == "pill" ? 20 : 10 }
 
     private func colorBinding(_ value: Binding<String>, fallback: UInt32) -> Binding<Color> {
         Binding(get: { AuraStyle.color(value.wrappedValue, fallback: fallback) },
                 set: { value.wrappedValue = AuraStyle.hex($0) })
     }
 
+    private func applyPreset(_ preset: AuraPreset) {
+        backgroundHex = preset.backgroundHex
+        surfaceHex = preset.surfaceHex
+        accentHex = preset.accentHex
+        logoHex = preset.logoHex
+        outlineHex = preset.outlineHex
+        boxShape = preset.boxShape
+        pattern = preset.pattern
+    }
 
     var body: some View {
         ZStack {
             background
                 .ignoresSafeArea()
 
+            ChassisPatternOverlay(pattern: pattern, tint: outline)
+                .ignoresSafeArea()
+
             if controller.showOnboarding {
-                OnboardingView(controller: controller, accent: accent, surface: surface)
+                OnboardingView(controller: controller, accent: accent, surface: surface, outline: outline, cornerRadius: cornerRadius)
             } else {
-                VStack(spacing: 16) {
+                VStack(spacing: 14) {
                     headerBar
                     visualizerPanel
                     controlsBar
@@ -1254,7 +1453,7 @@ struct StudioMainView: View {
                 .padding(20)
             }
         }
-        .frame(minWidth: 560, minHeight: 480)
+        .frame(minWidth: 580, minHeight: 500)
         .preferredColorScheme(.dark)
     }
 
@@ -1262,71 +1461,191 @@ struct StudioMainView: View {
 
     private var headerBar: some View {
         HStack(spacing: 12) {
-            AuraMark(shape: logoShape, color: logoColor)
+            AuraMark(shape: logoShape, color: logoColor, size: 26)
 
-            Text("AURA")
-                .font(AuraStyle.displayFont(size: 20))
-                .foregroundStyle(AuraStyle.grayscale100)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("AURA DICTATE")
+                    .font(AuraStyle.displayFont(size: 19))
+                    .tracking(0.6)
+                    .foregroundStyle(AuraStyle.grayscale100)
+
+                Text(controller.state == .recording ? "● ON AIR" : "● ARMED // \(controller.triggerKey.rawValue.uppercased())")
+                    .font(AuraStyle.mono(size: 10.5, weight: .semibold))
+                    .foregroundStyle(controller.state == .recording ? accent : AuraStyle.grayscale60)
+            }
 
             if let err = controller.errorMessage {
-                Text(err)
-                    .font(AuraStyle.bodyBold(size: 11.5))
+                Text(err.uppercased())
+                    .font(AuraStyle.mono(size: 10.5, weight: .bold))
                     .foregroundStyle(AuraStyle.error)
-                    .padding(.leading, 6)
+                    .padding(.leading, 4)
             }
 
             Spacer()
 
-            Button { controller.showAppearance.toggle() } label: {
-                Label("Appearance", systemImage: "paintpalette")
-            }
-            .popover(isPresented: $controller.showAppearance) { appearanceSettings }
-
             if !controller.microphoneGranted {
-                statusButton(label: "MIC", action: { controller.promptMicrophonePermission() })
+                statusButton(label: "MIC OFF", action: { controller.promptMicrophonePermission() })
             }
             if !controller.accessibilityGranted {
-                statusButton(label: "ACCESSIBILITY", action: { controller.promptAccessibilityPermission() })
+                statusButton(label: "ACCESS OFF", action: { controller.promptAccessibilityPermission() })
+            }
+
+            Button {
+                controller.showAppearance.toggle()
+            } label: {
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(accent)
+                        .frame(width: 7, height: 7)
+                    Text("CHASSIS")
+                        .font(AuraStyle.displayFont(size: 10.5))
+                        .tracking(0.8)
+                        .foregroundStyle(AuraStyle.grayscale100)
+                }
+                .padding(.horizontal, 12)
+                .frame(height: 28)
+                .background(
+                    RoundedRectangle(cornerRadius: max(3, cornerRadius * 0.5), style: .continuous)
+                        .fill(surface)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: max(3, cornerRadius * 0.5), style: .continuous)
+                                .strokeBorder(controller.showAppearance ? accent : outline, lineWidth: 1)
+                        )
+                )
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $controller.showAppearance, arrowEdge: .bottom) {
+                appearanceSettings
             }
         }
     }
 
     private var appearanceSettings: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Appearance").font(.headline)
-            ColorPicker("Background", selection: colorBinding($backgroundHex, fallback: 0x0E1118), supportsOpacity: false)
-            ColorPicker("Panel", selection: colorBinding($surfaceHex, fallback: 0x171B24), supportsOpacity: false)
-            ColorPicker("Accent", selection: colorBinding($accentHex, fallback: 0xE04755), supportsOpacity: false)
-            ColorPicker("Logo color", selection: colorBinding($logoHex, fallback: 0xE04755), supportsOpacity: false)
-            ColorPicker("Outline color", selection: colorBinding($outlineHex, fallback: 0x75515B), supportsOpacity: false)
-            Picker("Logo shape", selection: $logoShape) {
-                Text("Waveform").tag("waveform")
-                Text("Waveform circle").tag("circle")
-                Text("Microphone").tag("microphone")
-            }
-            Picker("Box shape", selection: $boxShape) {
-                Text("Rounded").tag("rounded")
-                Text("Pill").tag("pill")
-                Text("Square").tag("square")
-            }
+        VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Outline width")
-                Slider(value: $borderWidth, in: 0...4, step: 0.5)
-                Text(String(format: "%.1f", borderWidth)).monospacedDigit()
+                Text("CHASSIS & APPEARANCE")
+                    .font(AuraStyle.displayFont(size: 12))
+                    .tracking(0.7)
+                    .foregroundStyle(AuraStyle.grayscale100)
+                Spacer()
+                Button("RESET") {
+                    applyPreset(AuraStyle.presets[0])
+                    logoShape = "waveform"
+                    borderWidth = 1.0
+                }
+                .font(AuraStyle.mono(size: 10, weight: .bold))
+                .foregroundStyle(accent)
+                .buttonStyle(.plain)
             }
-            Button("Reset appearance") {
-                backgroundHex = "0E1118"
-                surfaceHex = "171B24"
-                accentHex = "E04755"
-                logoHex = "E04755"
-                outlineHex = "75515B"
-                logoShape = "waveform"
-                boxShape = "rounded"
-                borderWidth = 1
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("HARDWARE PRESETS")
+                    .font(AuraStyle.mono(size: 9.5, weight: .semibold))
+                    .foregroundStyle(AuraStyle.grayscale60)
+
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
+                    ForEach(AuraStyle.presets) { preset in
+                        Button {
+                            applyPreset(preset)
+                        } label: {
+                            HStack(spacing: 8) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(preset.name)
+                                        .font(AuraStyle.displayFont(size: 10))
+                                        .foregroundStyle(AuraStyle.grayscale100)
+                                    Text(preset.subtitle)
+                                        .font(AuraStyle.mono(size: 8.5))
+                                        .foregroundStyle(AuraStyle.grayscale60)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 4)
+                                HStack(spacing: 3) {
+                                    Circle().fill(AuraStyle.color(preset.backgroundHex, fallback: 0x0E1118)).frame(width: 9, height: 9)
+                                    Circle().fill(AuraStyle.color(preset.accentHex, fallback: 0xE04755)).frame(width: 9, height: 9)
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(AuraStyle.color(preset.surfaceHex, fallback: 0x171B24))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .strokeBorder(
+                                                accentHex.uppercased() == preset.accentHex.uppercased()
+                                                    ? AuraStyle.color(preset.accentHex, fallback: 0xE04755)
+                                                    : AuraStyle.color(preset.outlineHex, fallback: 0x383E4E),
+                                                lineWidth: 1
+                                            )
+                                    )
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("COLOR TOKENS")
+                    .font(AuraStyle.mono(size: 9.5, weight: .semibold))
+                    .foregroundStyle(AuraStyle.grayscale60)
+
+                HStack(spacing: 12) {
+                    ColorPicker("Ground", selection: colorBinding($backgroundHex, fallback: 0x0E1118), supportsOpacity: false)
+                    ColorPicker("Surface", selection: colorBinding($surfaceHex, fallback: 0x171B24), supportsOpacity: false)
+                }
+                .font(AuraStyle.bodyMedium(size: 12))
+
+                HStack(spacing: 12) {
+                    ColorPicker("Accent", selection: colorBinding($accentHex, fallback: 0xE04755), supportsOpacity: false)
+                    ColorPicker("Mark", selection: colorBinding($logoHex, fallback: 0xE04755), supportsOpacity: false)
+                    ColorPicker("Rule", selection: colorBinding($outlineHex, fallback: 0x383E4E), supportsOpacity: false)
+                }
+                .font(AuraStyle.bodyMedium(size: 12))
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Mark", selection: $logoShape) {
+                    Text("Wave").tag("waveform")
+                    Text("Disc").tag("circle")
+                    Text("Mic").tag("microphone")
+                }
+                .pickerStyle(.segmented)
+                .font(AuraStyle.bodyMedium(size: 11.5))
+
+                Picker("Corner", selection: $boxShape) {
+                    Text("Rounded").tag("rounded")
+                    Text("Square").tag("square")
+                    Text("Pill").tag("pill")
+                }
+                .pickerStyle(.segmented)
+                .font(AuraStyle.bodyMedium(size: 11.5))
+
+                Picker("Texture", selection: $pattern) {
+                    Text("Grid").tag("grid")
+                    Text("Mesh").tag("mesh")
+                    Text("Scan").tag("scanline")
+                    Text("Matte").tag("none")
+                }
+                .pickerStyle(.segmented)
+                .font(AuraStyle.bodyMedium(size: 11.5))
+
+                HStack {
+                    Text("Rule Width")
+                        .font(AuraStyle.bodyMedium(size: 12))
+                    Slider(value: $borderWidth, in: 0.5...3.0, step: 0.5)
+                    Text(String(format: "%.1fpt", borderWidth))
+                        .font(AuraStyle.mono(size: 11))
+                        .foregroundStyle(AuraStyle.grayscale70)
+                }
             }
         }
-        .padding(18)
-        .frame(width: 300)
+        .padding(16)
+        .frame(width: 330)
     }
 
     private func statusButton(label: String, action: @escaping () -> Void) -> some View {
@@ -1336,15 +1655,18 @@ struct StudioMainView: View {
                     .fill(AuraStyle.warning)
                     .frame(width: 6, height: 6)
                 Text(label)
-                    .font(AuraStyle.bodyBold(size: 11))
+                    .font(AuraStyle.mono(size: 10, weight: .bold))
                     .foregroundStyle(AuraStyle.grayscale100)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .frame(height: 28)
             .background(
-                Capsule()
+                RoundedRectangle(cornerRadius: max(3, cornerRadius * 0.5), style: .continuous)
                     .fill(surface)
-                    .overlay(Capsule().strokeBorder(AuraStyle.warning, lineWidth: 1))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: max(3, cornerRadius * 0.5), style: .continuous)
+                            .strokeBorder(AuraStyle.warning, lineWidth: 1)
+                    )
             )
         }
         .buttonStyle(.plain)
@@ -1354,29 +1676,56 @@ struct StudioMainView: View {
 
     private var visualizerPanel: some View {
         VStack(spacing: 14) {
+            HStack {
+                Text("[001] ACOUSTIC SIGNAL DECK")
+                    .font(AuraStyle.mono(size: 10, weight: .semibold))
+                    .foregroundStyle(AuraStyle.grayscale60)
+                Spacer()
+                Text(String(format: "16KHZ PCM // LAST %.0fMS", controller.history.first?.latencyMs ?? 0))
+                    .font(AuraStyle.mono(size: 10, weight: .medium))
+                    .foregroundStyle(AuraStyle.grayscale60)
+            }
+
             HStack(alignment: .center, spacing: 5) {
                 ForEach(Array(controller.audioLevels.enumerated()), id: \.offset) { _, level in
                     RoundedRectangle(cornerRadius: 1.5, style: .continuous)
                         .fill(
                             controller.state == .recording
-                                ? AnyShapeStyle(accent)
-                                : AnyShapeStyle(AuraStyle.surface)
+                                ? AnyShapeStyle(AuraStyle.meterGradient(accent: accent))
+                                : AnyShapeStyle(outline.opacity(0.45))
                         )
-                        .frame(width: 6, height: max(5, level * 44))
+                        .frame(width: 6, height: max(6, level * 46))
                         .animation(.linear(duration: 0.08), value: level)
                 }
             }
-            .frame(height: 48)
+            .frame(height: 50)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: max(2, cornerRadius * 0.6), style: .continuous)
+                    .fill(background.opacity(0.55))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: max(2, cornerRadius * 0.6), style: .continuous)
+                            .strokeBorder(outline.opacity(0.45), lineWidth: 0.8)
+                    )
+            )
 
             if !controller.currentDisplayText.isEmpty {
                 Text(controller.currentDisplayText)
-                    .font(AuraStyle.bodyRegular(size: 17))
+                    .font(AuraStyle.bodyMedium(size: 16))
                     .foregroundStyle(AuraStyle.grayscale100)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: .infinity)
+                    .padding(.horizontal, 8)
             }
 
             HStack(spacing: 12) {
+                Text("HOLD \(controller.triggerKey.rawValue.uppercased()) ANYWHERE TO DICTATE")
+                    .font(AuraStyle.mono(size: 10.5, weight: .medium))
+                    .foregroundStyle(AuraStyle.grayscale60)
+
+                Spacer()
+
                 Button {
                     if controller.state == .idle {
                         controller.startDictation()
@@ -1385,17 +1734,18 @@ struct StudioMainView: View {
                     }
                 } label: {
                     HStack(spacing: 8) {
-                        Image(systemName: controller.state == .recording ? "stop.fill" : "mic.fill")
-                            .font(.system(size: 12, weight: .bold))
+                        RoundedRectangle(cornerRadius: controller.state == .recording ? 1.5 : 5)
+                            .fill(AuraStyle.grayscale100)
+                            .frame(width: 8, height: 8)
                         Text(controller.state == .recording ? "STOP" : "RECORD")
-                            .font(AuraStyle.bodyBold(size: 12))
-                            .tracking(0.8)
+                            .font(AuraStyle.displayFont(size: 11.5))
+                            .tracking(0.9)
                     }
                     .foregroundStyle(AuraStyle.grayscale100)
-                    .padding(.horizontal, 22)
-                    .frame(height: 36)
+                    .padding(.horizontal, 18)
+                    .frame(height: 32)
                     .background(
-                        Capsule()
+                        RoundedRectangle(cornerRadius: max(3, cornerRadius * 0.55), style: .continuous)
                             .fill(controller.state == .recording ? AuraStyle.error : accent)
                     )
                 }
@@ -1403,7 +1753,7 @@ struct StudioMainView: View {
                 .disabled(controller.state == .finalizing)
             }
         }
-        .padding(18)
+        .padding(16)
         .frame(maxWidth: .infinity)
         .background(
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -1411,7 +1761,7 @@ struct StudioMainView: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .strokeBorder(
-                            outline,
+                            controller.state == .recording ? accent : outline,
                             lineWidth: borderWidth
                         )
                 )
@@ -1421,10 +1771,10 @@ struct StudioMainView: View {
     // MARK: Compact Single-Row Controls
 
     private var controlsBar: some View {
-        HStack(spacing: 18) {
+        HStack(spacing: 16) {
             HStack(spacing: 8) {
-                Text("KEY")
-                    .font(AuraStyle.bodyBold(size: 11))
+                Text("[KEY]")
+                    .font(AuraStyle.mono(size: 10.5, weight: .semibold))
                     .foregroundStyle(AuraStyle.grayscale60)
 
                 Picker("", selection: $controller.triggerKey) {
@@ -1436,34 +1786,37 @@ struct StudioMainView: View {
                 .frame(width: 105)
             }
 
-            Divider()
-                .frame(height: 16)
+            Rectangle()
+                .fill(outline.opacity(0.6))
+                .frame(width: 1, height: 16)
 
             Toggle("Pre-roll (\(Int(controller.preRollMs))ms)", isOn: $controller.instantPreRollEnabled)
-                .font(AuraStyle.bodyMedium(size: 13))
+                .font(AuraStyle.bodyMedium(size: 12.5))
                 .foregroundStyle(AuraStyle.grayscale90)
                 .tint(accent)
 
-            Divider()
-                .frame(height: 16)
+            Rectangle()
+                .fill(outline.opacity(0.6))
+                .frame(width: 1, height: 16)
 
             Toggle("Auto-paste", isOn: $controller.autoPasteEnabled)
-                .font(AuraStyle.bodyMedium(size: 13))
+                .font(AuraStyle.bodyMedium(size: 12.5))
                 .foregroundStyle(AuraStyle.grayscale90)
                 .tint(accent)
 
-            Divider()
-                .frame(height: 16)
+            Rectangle()
+                .fill(outline.opacity(0.6))
+                .frame(width: 1, height: 16)
 
             Toggle("Sounds", isOn: $controller.soundEffectsEnabled)
-                .font(AuraStyle.bodyMedium(size: 13))
+                .font(AuraStyle.bodyMedium(size: 12.5))
                 .foregroundStyle(AuraStyle.grayscale90)
                 .tint(accent)
 
             Spacer()
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.vertical, 11)
         .background(
             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .fill(surface)
@@ -1477,62 +1830,93 @@ struct StudioMainView: View {
     // MARK: History List
 
     private var historyList: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if !controller.history.isEmpty {
-                HStack {
-                    Text("HISTORY")
-                        .font(AuraStyle.bodyBold(size: 11))
-                        .tracking(0.8)
-                        .foregroundStyle(AuraStyle.grayscale60)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("[002] TRANSCRIPT LOG (\(controller.history.count))")
+                    .font(AuraStyle.mono(size: 10.5, weight: .semibold))
+                    .foregroundStyle(AuraStyle.grayscale60)
 
-                    Spacer()
+                Spacer()
 
+                if !controller.history.isEmpty {
                     Button {
                         controller.clearHistory()
                     } label: {
-                        Text("CLEAR")
-                            .font(AuraStyle.bodyBold(size: 11))
+                        Text("CLEAR ALL")
+                            .font(AuraStyle.mono(size: 10, weight: .bold))
                             .foregroundStyle(AuraStyle.grayscale60)
                     }
                     .buttonStyle(.plain)
                 }
             }
 
-            ScrollView {
-                LazyVStack(spacing: 8) {
-                    ForEach(controller.history) { item in
-                        HStack(spacing: 12) {
-                            Text(item.text)
-                                .font(AuraStyle.bodyRegular(size: 15))
-                                .foregroundStyle(AuraStyle.grayscale100)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .textSelection(.enabled)
-
-                            Text(String(format: "%.0fms", item.latencyMs))
-                                .font(AuraStyle.bodyBold(size: 11))
-                                .foregroundStyle(AuraStyle.grayscale60)
-
-                            Button {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(item.text, forType: .string)
-                            } label: {
-                                Image(systemName: "doc.on.doc")
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(AuraStyle.grayscale70)
-                                    .padding(6)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .background(
+            if controller.history.isEmpty {
+                HStack {
+                    Spacer()
+                    Text("NO TRANSCRIPTS RECORDED YET")
+                        .font(AuraStyle.mono(size: 11, weight: .medium))
+                        .foregroundStyle(AuraStyle.grayscale60.opacity(0.75))
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .fill(surface.opacity(0.55))
+                        .overlay(
                             RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                                .fill(surface)
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                                        .strokeBorder(outline, lineWidth: borderWidth)
-                                )
+                                .strokeBorder(outline.opacity(0.6), lineWidth: borderWidth)
                         )
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(Array(controller.history.enumerated()), id: \.element.id) { index, item in
+                            HStack(alignment: .center, spacing: 12) {
+                                Text(String(format: "[%02d]", index + 1))
+                                    .font(AuraStyle.mono(size: 10.5, weight: .semibold))
+                                    .foregroundStyle(accent)
+
+                                Text(item.text)
+                                    .font(AuraStyle.bodyRegular(size: 14.5))
+                                    .foregroundStyle(AuraStyle.grayscale100)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
+
+                                Text(String(format: "%.1fs · %.0fms", item.durationSeconds, item.latencyMs))
+                                    .font(AuraStyle.mono(size: 10.5))
+                                    .foregroundStyle(AuraStyle.grayscale60)
+
+                                Button {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(item.text, forType: .string)
+                                } label: {
+                                    Text("COPY")
+                                        .font(AuraStyle.mono(size: 10, weight: .bold))
+                                        .foregroundStyle(AuraStyle.grayscale90)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 4)
+                                        .background(
+                                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                                .fill(background.opacity(0.65))
+                                                .overlay(
+                                                    RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                                        .strokeBorder(outline, lineWidth: 0.8)
+                                                )
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(
+                                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                                    .fill(surface)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                                            .strokeBorder(outline, lineWidth: borderWidth)
+                                    )
+                            )
+                        }
                     }
                 }
             }
@@ -1547,6 +1931,8 @@ struct OnboardingView: View {
     @ObservedObject var controller: DictationController
     let accent: Color
     let surface: Color
+    var outline: Color = Color(red: 0.22, green: 0.24, blue: 0.30)
+    var cornerRadius: CGFloat = 10
 
     private var step: Int { controller.onboardingStep }
     private var accessPaneName: String {
@@ -1557,83 +1943,105 @@ struct OnboardingView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 12) {
-                AuraMark(shape: "waveform", color: accent)
-                Text("AURA DICTATE").font(AuraStyle.displayFont(size: 17))
+                AuraMark(shape: "waveform", color: accent, size: 26)
+                Text("AURA DICTATE // SETUP").font(AuraStyle.displayFont(size: 16))
                 Spacer()
-                Text("\(step + 1) / 4")
-                    .font(AuraStyle.bodyMedium(size: 12))
+                Text(String(format: "[STEP 0%d / 04]", step + 1))
+                    .font(AuraStyle.mono(size: 11, weight: .semibold))
                     .foregroundStyle(AuraStyle.grayscale60)
             }
 
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 14) {
                 switch step {
                 case 0:
-                    Text("Welcome to Aura Dictate").font(.system(size: 26, weight: .bold))
-                    Text("Hold a shortcut, speak, and release it to paste your words. Let's set up the permissions Aura needs.")
-                    Text("Speech is transcribed on your Mac. You can revisit this guide from the menu bar.")
+                    Text("PRECISION LOCAL DICTATION")
+                        .font(AuraStyle.displayFont(size: 22))
+                    Text("Hold a shortcut anywhere on macOS, speak naturally, and release to inject text directly into your active cursor.")
+                        .font(AuraStyle.bodyRegular(size: 15))
+                    Text("100% on-device via Apple SpeechTranscriber. Zero network bandwidth, ~30 MB RAM, and customizable industrial themes.")
+                        .font(AuraStyle.bodyRegular(size: 14))
                         .foregroundStyle(AuraStyle.grayscale70)
                 case 1:
-                    Text("Allow your microphone").font(.system(size: 26, weight: .bold))
-                    Text("Aura needs microphone access to hear you. Select the button below, then allow access in macOS.")
-                    Text("Pre-roll is on by default and keeps a short audio buffer in memory while Aura is idle. You can turn it off in the main window.")
-                        .foregroundStyle(AuraStyle.grayscale70)
+                    Text("MICROPHONE ACCESS")
+                        .font(AuraStyle.displayFont(size: 22))
+                    Text("Aura needs microphone access to capture 16kHz PCM audio and maintain its 380ms pre-roll ring buffer so your first syllable is never clipped.")
+                        .font(AuraStyle.bodyRegular(size: 15))
                     permissionStatus(controller.microphoneGranted)
-                    Button(controller.microphoneGranted ? "Microphone enabled" : "Allow microphone") {
+                    Button(controller.microphoneGranted ? "MICROPHONE ENABLED" : "ALLOW MICROPHONE") {
                         controller.promptMicrophonePermission()
                     }
+                    .font(AuraStyle.displayFont(size: 11))
+                    .buttonStyle(.borderedProminent)
+                    .tint(accent)
                     .disabled(controller.microphoneGranted)
                 case 2:
-                    Text("Enable Accessibility").font(.system(size: 26, weight: .bold))
-                    Text("Accessibility lets Aura detect your shortcut and paste text into the active app.")
-                    Text("In Privacy & Security, open \(accessPaneName) and turn on Aura Dictate. If it isn't listed, use + to add it from Applications. If Aura still reports access is off, remove the old entry and add the app again.")
+                    Text("ACCESSIBILITY ACCESS")
+                        .font(AuraStyle.displayFont(size: 22))
+                    Text("Accessibility lets Aura detect your Right ⌘ push-to-talk key globally and paste finished transcripts straight into the active window.")
+                        .font(AuraStyle.bodyRegular(size: 15))
+                    Text("In Privacy & Security → \(accessPaneName), enable Aura Dictate.")
+                        .font(AuraStyle.bodyRegular(size: 14))
                         .foregroundStyle(AuraStyle.grayscale70)
                     permissionStatus(controller.accessibilityGranted)
-                    Button(controller.accessibilityGranted ? "Accessibility enabled" : "Open \(accessPaneName)") {
+                    Button(controller.accessibilityGranted ? "ACCESSIBILITY ENABLED" : "OPEN \(accessPaneName.uppercased())") {
                         controller.promptAccessibilityPermission()
                     }
+                    .font(AuraStyle.displayFont(size: 11))
+                    .buttonStyle(.borderedProminent)
+                    .tint(accent)
                     .disabled(controller.accessibilityGranted)
                 default:
-                    Text("Try dictation").font(.system(size: 26, weight: .bold))
-                    Text("Click a text field in another app, hold Right Command while you speak, then release it. Aura will paste the finished text there.")
-                    Text("You can change the shortcut and appearance in Aura. Up to 50 transcripts are saved on this Mac until you clear the history.")
-                        .foregroundStyle(AuraStyle.grayscale70)
+                    Text("READY FOR DICTATION")
+                        .font(AuraStyle.displayFont(size: 22))
+                    Text("Click any text field, hold Right ⌘ while speaking, and release. Use the CHASSIS button in the top bar anytime to switch hardware themes, colors, or surface patterns.")
+                        .font(AuraStyle.bodyRegular(size: 15))
                     if !controller.microphoneGranted || !controller.accessibilityGranted {
-                        Text("Some permissions are still off. You can finish setup later from the menu bar.")
+                        Text("Some permissions are still pending. You can reopen this guide anytime from the menu bar.")
+                            .font(AuraStyle.bodyMedium(size: 13.5))
                             .foregroundStyle(AuraStyle.warning)
                     }
                 }
             }
-            .font(AuraStyle.bodyRegular(size: 15))
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(22)
-            .background(RoundedRectangle(cornerRadius: 14).fill(surface))
+            .background(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(surface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            .strokeBorder(outline, lineWidth: 1)
+                    )
+            )
 
             HStack {
-                Button("Set up later") { controller.finishOnboarding() }
+                Button("SKIP FOR NOW") { controller.finishOnboarding() }
+                    .font(AuraStyle.mono(size: 11, weight: .semibold))
                     .buttonStyle(.plain)
                     .foregroundStyle(AuraStyle.grayscale70)
                 Spacer()
                 if step > 0 {
-                    Button("Back") { controller.onboardingStep -= 1 }
+                    Button("BACK") { controller.onboardingStep -= 1 }
+                        .font(AuraStyle.mono(size: 11, weight: .semibold))
                 }
-                Button(step == 3 ? "Open Aura" : "Continue") {
+                Button(step == 3 ? "LAUNCH DECK" : "NEXT →") {
                     if step == 3 { controller.finishOnboarding() }
                     else { controller.onboardingStep += 1 }
                 }
+                .font(AuraStyle.displayFont(size: 11))
                 .buttonStyle(.borderedProminent)
                 .tint(accent)
             }
         }
-        .padding(28)
+        .padding(26)
         .frame(maxWidth: 620, maxHeight: 520)
         .foregroundStyle(AuraStyle.grayscale100)
     }
 
     private func permissionStatus(_ granted: Bool) -> some View {
-        Label(granted ? "Enabled" : "Not enabled yet", systemImage: granted ? "checkmark.circle.fill" : "circle")
-            .font(AuraStyle.bodyMedium(size: 13))
-            .foregroundStyle(granted ? Color.green : AuraStyle.grayscale70)
+        Label(granted ? "STATUS: ENABLED" : "STATUS: AWAITING PERMISSION", systemImage: granted ? "checkmark.circle.fill" : "circle")
+            .font(AuraStyle.mono(size: 11.5, weight: .semibold))
+            .foregroundStyle(granted ? AuraStyle.success : AuraStyle.grayscale70)
     }
 }
 
@@ -1647,6 +2055,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        AuraStyle.registerBundledFonts()
         controller = DictationController()
 
         setupFloatingHUD()
