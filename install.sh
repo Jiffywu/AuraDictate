@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # Aura Dictate — One-Line macOS Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/Jiffywu/AuraDictate-public/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/Jiffywu/AuraDictate/main/install.sh | bash
 
-REPO="Jiffywu/AuraDictate-public"
+REPO="Jiffywu/AuraDictate"
 INSTALL_PATH="/Applications/AuraDictate.app"
 TMP_DIR="$(mktemp -d /tmp/auradictate-install.XXXXXX)"
 trap 'rm -rf "$TMP_DIR"' EXIT

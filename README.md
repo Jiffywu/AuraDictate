@@ -3,11 +3,11 @@
 Aura Dictate is a macOS menu bar app for push-to-talk dictation. It uses Apple's `SpeechAnalyzer` and `SpeechTranscriber` to transcribe speech on device with an original voice-wave mark, a 380ms pre-roll ring buffer, and a live customizable industrial chassis.
 
 <p align="center">
-  <a href="https://github.com/Jiffywu/AuraDictate-public/releases/download/v1.1.0/auradictate-promo.mp4">
+  <a href="https://github.com/Jiffywu/AuraDictate/releases/download/v1.1.0/auradictate-promo.mp4">
     <img src="docs/auradictate-demo.gif" alt="Aura Dictate — On-Device Push-to-Talk Dictation for macOS" width="100%" />
   </a>
   <br />
-  <sub><a href="https://github.com/Jiffywu/AuraDictate-public/releases/download/v1.1.0/auradictate-promo.mp4">▶ Watch full 1080p60 video with sound (MP4)</a> · <a href="https://github.com/Jiffywu/AuraDictate-public/releases/latest/download/AuraDictate.dmg">⬇ Download AuraDictate.dmg (1.1 MB)</a></sub>
+  <sub><a href="https://github.com/Jiffywu/AuraDictate/releases/download/v1.1.0/auradictate-promo.mp4">▶ Watch full 1080p60 video with sound (MP4)</a> · <a href="https://github.com/Jiffywu/AuraDictate/releases/latest/download/AuraDictate.dmg">⬇ Download AuraDictate.dmg (1.1 MB)</a></sub>
 </p>
 
 ## Principles
@@ -29,14 +29,14 @@ The app currently uses `en_US` and does not offer a language picker.
 ## Install
 
 ### Option 1: Download `.dmg` (Recommended for most users)
-1. Download **[`AuraDictate.dmg`](https://github.com/Jiffywu/AuraDictate-public/releases/latest/download/AuraDictate.dmg)** from the [latest GitHub Release](https://github.com/Jiffywu/AuraDictate-public/releases/latest).
+1. Download **[`AuraDictate.dmg`](https://github.com/Jiffywu/AuraDictate/releases/latest/download/AuraDictate.dmg)** from the [latest GitHub Release](https://github.com/Jiffywu/AuraDictate/releases/latest).
 2. Open `AuraDictate.dmg` and drag **AuraDictate** into **Applications**.
 
 ### Option 2: One-Line Terminal Installer
 Installs the pre-built release directly into `/Applications/AuraDictate.app`, clears quarantine attributes, and launches it in your menu bar:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Jiffywu/AuraDictate-public/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Jiffywu/AuraDictate/main/install.sh | bash
 ```
 
 ### Option 3: Build from Source
