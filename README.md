@@ -18,20 +18,26 @@ Aura Dictate is a macOS menu bar app for push-to-talk dictation. It uses Apple's
 
 The app currently uses `en_US` and does not offer a language picker.
 
-## Build and run
+## Install
+
+### Option 1: Download `.dmg` (Recommended for most users)
+1. Download **[`AuraDictate.dmg`](https://github.com/Jiffywu/AuraDictate-public/releases/latest/download/AuraDictate.dmg)** from the [latest GitHub Release](https://github.com/Jiffywu/AuraDictate-public/releases/latest).
+2. Open `AuraDictate.dmg` and drag **AuraDictate** into **Applications**.
+
+### Option 2: One-Line Terminal Installer
+Installs the pre-built release directly into `/Applications/AuraDictate.app`, clears quarantine attributes, and launches it in your menu bar:
 
 ```sh
-./build.sh
-open build/AuraDictate.app
+curl -fsSL https://raw.githubusercontent.com/Jiffywu/AuraDictate-public/main/install.sh | bash
 ```
 
-The default build is ad hoc signed and stays in `build/`. To build elsewhere, pass a destination:
-
+### Option 3: Build from Source
 ```sh
-./build.sh /path/to/AuraDictate.app
+./build.sh /Applications/AuraDictate.app
+open /Applications/AuraDictate.app
 ```
 
-A Developer ID signature can be supplied with `SIGN_IDENTITY`. Ad hoc builds may require permissions to be granted again after rebuilding. Distribution outside your own Mac requires signing and notarization appropriate for your release.
+The default `./build.sh` is ad hoc signed and outputs to `build/AuraDictate.app` unless a destination path is passed. A Developer ID signature can be supplied with `SIGN_IDENTITY`, and `./scripts/package-release.sh` builds both `dist/AuraDictate.dmg` and `dist/AuraDictate-macos-arm64.zip`.
 
 ## Use
 
