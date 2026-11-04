@@ -42,11 +42,13 @@ fi
 
 plutil -lint "$STAGE_APP/Contents/Info.plist" >/dev/null
 
-swiftc -O \
+swiftc -Osize \
     -target arm64-apple-macosx26.0 \
     -parse-as-library \
+    -Xlinker -dead_strip \
     "$SCRIPT_DIR/AuraDictate.swift" \
     -o "$STAGE_APP/Contents/MacOS/AuraDictate"
+strip -x "$STAGE_APP/Contents/MacOS/AuraDictate"
 
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
     codesign --force --deep --entitlements "$SCRIPT_DIR/Entitlements.plist" --sign - "$STAGE_APP"
